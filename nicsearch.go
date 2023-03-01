@@ -1,31 +1,23 @@
 package main
 
 import (
-	"bufio"
-	"compress/gzip"
-	"errors"
+	"bytes"
+	"flag"
 	"fmt"
-	"io"
 	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/BourgeoisBear/range2cidr"
+	gerr "github.com/pkg/errors"
+	"go.etcd.io/bbolt"
 )
 
+// ls *.go *.gz | entr -c go run nicsearch.go
+// Ctrl-w N (copy)
+// Ctrl-w "+ (paste)
 func main() {
-
-	/*
-		TODO:
-			- iterate dbs
-			- lookup by ip
-			- lookup by asn
-	*/
-
-	if false {
-		range2cidr.Deaggregate(netip.Addr{}, netip.Addr{})
-	}
 
 	var E error
 	defer func() {
@@ -35,152 +27,299 @@ func main() {
 		}
 	}()
 
-	// TODO: flags (by ip, by asn, specify registries)
-	// TODO: download DBs & compress
-	// TODO: IP mode: iterate each DB, stop on first match
-	// TODO: ASN mode: iterate specified DB
-	pF, E := os.Open("./db/arin_latest.txt.gz")
-	if E != nil {
-		return
-	}
-	defer pF.Close()
+	DBDIR := "./db"
 
-	// gunzip
-	gzr, E := gzip.NewReader(pF)
-	if E != nil {
-		return
-	}
+	// flags
+	var bReIndex, bDownload bool
+	flag.BoolVar(&bReIndex, "reindex", false, "rebuild index into RIR database")
+	flag.BoolVar(&bDownload, "download", false, "download RIR databases")
+	flag.Parse()
 
-	// store rows in memory
-	lines := make([]Row, 0)
-	pSc := bufio.NewScanner(gzr)
-	ixLine := 0
-	for pSc.Scan() {
+	// download
+	if bDownload {
 
-		ixLine += 1
-		szLine := pSc.Text()
+		bReIndex = true
 
-		// skip header
-		if ixLine == 1 {
-			continue
-		}
-
-		// skip comments
-		if strings.HasPrefix(szLine, "#") {
-			continue
-		}
-
-		// skip summaries
-		if strings.HasSuffix(szLine, "|summary") {
-			continue
-		}
-
-		pr, err := ParseRow(szLine)
-		if err != nil {
-			err = fmt.Errorf("Line %d: %s\nError: %w", ixLine, szLine, err)
-			fmt.Fprintln(os.Stderr, err)
-		} else {
-			lines = append(lines, pr)
-		}
-	}
-	if E = pSc.Err(); E != nil {
-		return
-	}
-
-	regId, E := RegIdFromIP(lines, "23.239.224.0")
-	if E != nil {
-		return
-	}
-	fmt.Println(regId)
-
-	oAsn, found := LookupASN(lines, "7903")
-	if found {
-		PrintASN(os.Stdout, oAsn)
-	}
-
-	if len(regId) > 0 {
-		// TODO: as callback, capture ASN(s)
-		LookupRegId(lines, regId)
-	}
-}
-
-func RegIdFromIP(lines []Row, szTgtIp string) (string, error) {
-
-	ipTgtIp, err := netip.ParseAddr(szTgtIp)
-	if err != nil {
-		return "", err
-	}
-
-	var tgt string
-	if ipTgtIp.Is4In6() {
-		ipTgtIp = ipTgtIp.Unmap()
-		tgt = "ipv4"
-	} else if ipTgtIp.Is4() {
-		tgt = "ipv4"
-	} else if ipTgtIp.Is6() {
-		tgt = "ipv6"
-	} else {
-		return "", errors.New("UNKNOWN ADDR TYPE")
-	}
-
-	for _, row := range lines {
-
-		// version mismatch
-		if row.Type != tgt {
-			continue
-		}
-
-		// no network prefixes
-		if len(row.IpRange) == 0 {
-			continue
-		}
-
-		for _, rng := range row.IpRange {
-			if rng.IsValid() && rng.Contains(ipTgtIp) {
-				return row.RegId, nil
+		// download delegations from each RIR
+		mRIR := GetRIRs()
+		for key := range mRIR {
+			E = DownloadRIRD(mRIR[key], DBDIR, DBDIR)
+			if E != nil {
+				return
 			}
 		}
 	}
 
-	return "", nil
+	// bolt
+	boltDbFname := DBDIR + "/nicsearch.db"
+
+	if bReIndex {
+		os.Remove(boltDbFname)
+	}
+
+	// TODO: ask for update-db if not exist
+	db, E := bbolt.Open(boltDbFname, 0600, nil)
+	if E != nil {
+		return
+	}
+	defer db.Close()
+
+	// TODO: capture & report RIR list dates & versions?
+
+	if bReIndex {
+
+		// create buckets
+		pBkt, err := CreateBktFiller(db)
+		if err != nil {
+			E = err
+			return
+		}
+
+		// TODO: $HOME/.cache/APPNAME/
+
+		// fill from sources
+		mRIR := GetRIRs()
+		for key := range mRIR {
+			fname := DBDIR + "/" + mRIR[key].Filename + ".txt.gz"
+			fmt.Printf("\x1b[1mINDEXING:\x1b[0m %s\n", fname)
+			E = pBkt.FillFromFile(fname)
+			if E != nil {
+				return
+			}
+		}
+
+		return
+	}
+
+	// TODO: stdin commands instead of flags
+	as := netip.MustParseAddr("23.239.224.0")
+	as = netip.MustParseAddr("13.116.0.21") // ripe
+	// as = netip.MustParseAddr("14.1.96.7")
+	// as = netip.MustParseAddr("45.4.68.1")
+	// oAsn, found := LookupASN(lines, "7903")
+	// as = netip.MustParseAddr("192.91.139.50")
+	fmt.Println(as)
+
+	row, found, E := FindByIp(db, as)
+	if E != nil {
+		return
+	}
+
+	// row, found, E = FindByAsn(db, "arin", "7903")
+	// if E != nil {
+	// 	return
+	// }
+
+	if found {
+		sAssoc, e2 := row.FindAssociated(db)
+		if e2 != nil {
+			E = e2
+			return
+		}
+		for ix := range sAssoc {
+			bsPretty := sAssoc[ix].Pretty()
+			os.Stdout.Write(bsPretty)
+			os.Stdout.Write([]byte("\n"))
+		}
+	} else {
+		fmt.Println("NOT FOUND")
+	}
+
+	return
 }
 
-func LookupRegId(ln []Row, regId string) {
-	for ix := range ln {
-		if ln[ix].RegId != regId {
-			continue
-		}
-		fmt.Println(ln[ix].Pretty())
+func (r Row) FindAssociated(db *bbolt.DB) ([]Row, error) {
+
+	// start transaction
+	tx, err := db.Begin(false)
+	if err != nil {
+		return nil, err
 	}
+	defer tx.Rollback()
+
+	// fetch buckets
+	bktIdIx, err := GetBucket(tx, BiId2Ix.Key())
+	if err != nil {
+		return nil, err
+	}
+
+	bktReg, err := GetBucket(bktIdIx, r.Registry)
+	if err != nil {
+		return nil, err
+	}
+
+	bktId := bktReg.Bucket(r.RegId)
+	if bktId == nil {
+		return nil, nil
+	}
+
+	bktRows, err := GetBucket(tx, BiRow.Key())
+	if err != nil {
+		return nil, err
+	}
+
+	ret := make([]Row, 0)
+	err = bktId.ForEach(func(k, v []byte) error {
+		if v := bktRows.Get(k); len(v) > 0 {
+			row, e2 := ParseRow(v, true)
+			if e2 != nil {
+				return e2
+			}
+			ret = append(ret, row)
+		}
+		return nil
+	})
+	return ret, err
 }
 
-func LookupASN(ln []Row, asnId string) (Row, bool) {
-	for ix := range ln {
-		if (ln[ix].Type != "asn") || (ln[ix].Start != asnId) {
-			continue
-		}
-		return ln[ix], true
+func FindByAsn(db *bbolt.DB, registry, asn string) (ret Row, found bool, err error) {
+
+	// start transaction
+	tx, err := db.Begin(false)
+	if err != nil {
+		return
 	}
-	return Row{}, false
+	defer tx.Rollback()
+
+	// ASN index bucket
+	bktAsn, err := GetBucket(tx, BiAsn.Key())
+	if err != nil {
+		return
+	}
+
+	// lookup row index
+	rowIx := bktAsn.Get([]byte(registry + "|" + asn))
+	if rowIx == nil {
+		return
+	}
+
+	// row data bucket
+	bktRows, err := GetBucket(tx, BiRow.Key())
+	if err != nil {
+		return
+	}
+
+	// get row data from row index
+	bsRow := bktRows.Get(rowIx)
+	if len(bsRow) == 0 {
+		return
+	}
+
+	// parse row data into struct
+	found = true
+	ret, err = ParseRow(bsRow, false)
+	return
+}
+
+func FindByIp(db *bbolt.DB, as netip.Addr) (ret Row, found bool, err error) {
+
+	if !as.IsValid() {
+		return
+	}
+
+	// start transaction
+	tx, err := db.Begin(false)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
+
+	// fetch buckets
+	bktRows, err := GetBucket(tx, BiRow.Key())
+	if err != nil {
+		return
+	}
+
+	ipix := BiV4
+	if as.Is6() {
+		ipix = BiV6
+	}
+	bktIp, err := GetBucket(tx, ipix.Key())
+	if err != nil {
+		return
+	}
+
+	// lookup row index by ip
+	binIpAddr := as.AsSlice()
+	curBktIp := bktIp.Cursor()
+	k, v := curBktIp.Seek(binIpAddr)
+
+	tryReSeek := true
+
+	// case: not found, or in last network range
+	if k == nil {
+		// fetch row index of last network range
+		k, v = curBktIp.Last()
+		if k == nil {
+			return
+		}
+		tryReSeek = false
+	}
+
+RESEEK:
+
+	// get row data from row index
+	bsRow := bktRows.Get(v)
+	if len(bsRow) == 0 {
+		return
+	}
+
+	// parse row data into struct
+	ret, err = ParseRow(bsRow, true)
+	if err != nil {
+		return
+	}
+
+	// check for range membership
+	for j := range ret.IpRange {
+		if ret.IpRange[j].Contains(as) {
+			found = true
+			return
+		}
+	}
+
+	// backtrack once
+	if tryReSeek {
+		tryReSeek = false
+		k, v = curBktIp.Prev()
+		if k != nil {
+			goto RESEEK
+		}
+	}
+
+	return
 }
 
 type Row struct {
-	Registry string
-	Cc       string
-	Type     string
-	Start    string
-	Value    string
-	Date     string
-	Status   string
-	RegId    string
+	Registry []byte
+	Cc       []byte
+	Type     []byte
+	Start    []byte
+	Value    []byte
+	Date     []byte
+	Status   []byte
+	RegId    []byte
 
 	ValueInt int
 	IpStart  netip.Addr
 	IpRange  []netip.Prefix
 }
 
-func (pR *Row) Raw() string {
-	s := []string{
+func (pR *Row) AsnKey() []byte {
+	return bytes.Join([][]byte{pR.Registry, pR.Start}, []byte("|"))
+}
+
+func (pR *Row) IsType(s ...string) bool {
+	for ix := range s {
+		if bytes.Equal(pR.Type, []byte(s[ix])) {
+			return true
+		}
+	}
+	return false
+}
+
+func (pR *Row) Raw() []byte {
+	s := [][]byte{
 		pR.Registry,
 		pR.Cc,
 		pR.Type,
@@ -190,20 +329,21 @@ func (pR *Row) Raw() string {
 		pR.Status,
 		pR.RegId,
 	}
-	return strings.Join(s, "|")
+	return bytes.Join(s, []byte("|"))
 }
 
-func (pR *Row) Pretty() string {
+func (pR *Row) Pretty() []byte {
 
-	s := make([]string, 0, 7)
+	s := make([][]byte, 0, 7)
 	s = append(s, pR.Registry, pR.Cc, pR.Type)
 
-	if pR.Type == "asn" {
+	if pR.IsType("asn") {
 
 		s = append(s, pR.Start, pR.Value)
 
 	} else {
 
+		// TODO: print row multiple times for each subnet
 		if len(pR.IpRange) > 0 {
 			sRng := make([]string, 0, len(pR.IpRange))
 			for _, r := range pR.IpRange {
@@ -212,22 +352,25 @@ func (pR *Row) Pretty() string {
 				}
 			}
 			if len(sRng) > 0 {
-				s = append(s, strings.Join(sRng, ","))
+				s = append(s, []byte(strings.Join(sRng, ",")))
 			}
 		}
 	}
 
-	s = append(s, pR.Date, pR.Status)
+	s = append(s, pR.Date, pR.Status) //, pR.RegId)
 
-	return strings.Join(s, "|")
+	// TODO: tabularize in TTY mode
+	return bytes.Join(s, []byte("|"))
 }
 
-func ParseRow(line string) (ret Row, err error) {
+func ParseRow(line []byte, bFillRange bool) (ret Row, err error) {
 
-	row := strings.Split(line, "|")
+	row := bytes.Split(line, []byte("|"))
 
+	// NOTE: Clone() to ensure we're not referencing
+	// something else's slice
 	for ix := range row {
-		val := strings.TrimSpace(row[ix])
+		val := Clone(bytes.TrimSpace(row[ix]))
 		switch ix {
 		case 0:
 			ret.Registry = val
@@ -248,55 +391,61 @@ func ParseRow(line string) (ret Row, err error) {
 		}
 	}
 
-	nVal, err := strconv.Atoi(ret.Value)
+	nVal, err := strconv.Atoi(string(ret.Value))
 	if err != nil {
-		err = fmt.Errorf("col 5, number expected: %w", err)
+		err = gerr.WithMessage(err, "col 5, number expected")
 		return
 	}
 	ret.ValueInt = nVal
 
-	switch ret.Type {
-	case "ipv4", "ipv6":
-		ip, e2 := netip.ParseAddr(ret.Start)
-		if e2 != nil {
-			err = fmt.Errorf("col 4, ip addr expected: %w", e2)
-			return
-		}
-		ret.IpStart = ip
-		// TODO: validate that address is of correct family
+	// early exit for non-ip records
+	is4 := ret.IsType("ipv4")
+	is6 := ret.IsType("ipv6")
+	if !is4 && !is6 {
+		return
+	}
 
-		switch ret.Type {
-		case "ipv6":
-			ret.IpRange = []netip.Prefix{netip.PrefixFrom(ip, nVal)}
+	// first host address
+	ip, e2 := netip.ParseAddr(string(ret.Start))
+	if e2 != nil {
+		err = gerr.WithMessage(err, "col 4, ip addr expected")
+		return
+	}
+	ret.IpStart = ip
 
-		case "ipv4":
+	// validate address family
+	if (is4 && !ip.Is4()) || (is6 && !ip.Is6()) {
+		err = gerr.New("ip address / label version mismatch")
+		return
+	}
 
-			// TODO: tabularize in TTY mode
-			// ls *.go *.gz | entr -c go run nicsearch.go
+	// skip/proceed with CIDR deaggregation
+	if !bFillRange {
+		return
+	}
 
-			// get base addr as int
-			uBase, ok := range2cidr.V4ToUint32(ip)
-			if !ok {
-				err = errors.New("failed to convert v4 address to uint32")
-				return
-			}
+	// fill IpRange with list of network prefixes
+	if is6 {
+		ret.IpRange = []netip.Prefix{netip.PrefixFrom(ip, nVal)}
+		return
+	}
 
-			// calculate last host addr, then convert back to netip
-			ipLast := range2cidr.Uint32ToV4(uBase + uint32(nVal) - 1)
+	// get base addr as int
+	uBase, ok := range2cidr.V4ToUint32(ip)
+	if !ok {
+		err = gerr.New("failed to convert v4 address to uint32")
+		return
+	}
 
-			// create network masks from range
-			ret.IpRange, e2 = range2cidr.Deaggregate(ip, ipLast)
-			if e2 != nil {
-				err = fmt.Errorf("ip deaggregation failure: %w", e2)
-				return
-			}
-		}
+	// calculate last host addr, then convert back to netip
+	ipLast := range2cidr.Uint32ToV4(uBase + uint32(nVal) - 1)
+
+	// create network masks from range
+	ret.IpRange, e2 = range2cidr.Deaggregate(ip, ipLast)
+	if e2 != nil {
+		err = gerr.WithMessage(e2, "ip deaggregation failure")
+		return
 	}
 
 	return
-}
-
-func PrintASN(iWri io.Writer, data Row) {
-	// TODO: improved formatting
-	fmt.Fprintf(iWri, "%#v\n", data)
 }
