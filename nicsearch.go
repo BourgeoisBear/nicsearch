@@ -1,39 +1,67 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/BourgeoisBear/range2cidr"
-	gerr "github.com/pkg/errors"
+	"github.com/mattn/go-isatty"
+	"github.com/pkg/errors"
 	"go.etcd.io/bbolt"
 )
+
+type Modes struct {
+	Color  bool
+	Pretty bool
+}
+
+func (m *Modes) UpdateFromCmd(cmd string) bool {
+	switch cmd {
+	case "pretty":
+		m.Pretty = true
+	case "nopretty":
+		m.Pretty = false
+	default:
+		return false
+	}
+	return true
+}
 
 // ls *.go *.gz | entr -c go run nicsearch.go
 // Ctrl-w N (copy)
 // Ctrl-w "+ (paste)
 func main() {
 
-	var E error
-	defer func() {
-		if E != nil {
-			fmt.Println(E)
-			os.Exit(1)
-		}
-	}()
-
 	DBDIR := "./db"
+
+	var mode Modes
+	bIsTty := false
+	if isatty.IsTerminal(os.Stdout.Fd()) {
+		bIsTty = true
+	}
 
 	// flags
 	var bReIndex, bDownload bool
 	flag.BoolVar(&bReIndex, "reindex", false, "rebuild index into RIR database")
 	flag.BoolVar(&bDownload, "download", false, "download RIR databases")
+	flag.BoolVar(&mode.Color, "color", bIsTty, "force color output on/off")
+	flag.BoolVar(&mode.Pretty, "pretty", bIsTty, "force pretty print on/off")
 	flag.Parse()
+
+	var E error
+	defer func() {
+		if E != nil {
+			mode.printErr(E)
+			os.Exit(1)
+		}
+	}()
 
 	// download
 	if bDownload {
@@ -57,14 +85,19 @@ func main() {
 		os.Remove(boltDbFname)
 	}
 
-	// TODO: ask for update-db if not exist
+	/*
+		TODO:
+			- reindex if db doesn't exist
+			- download if RIR data doesn't exist
+				- notify "first run, downloading"
+			- configurable directory (default to .cache/APPNAME)
+	*/
+
 	db, E := bbolt.Open(boltDbFname, 0600, nil)
 	if E != nil {
 		return
 	}
 	defer db.Close()
-
-	// TODO: capture & report RIR list dates & versions?
 
 	if bReIndex {
 
@@ -74,8 +107,6 @@ func main() {
 			E = err
 			return
 		}
-
-		// TODO: $HOME/.cache/APPNAME/
 
 		// fill from sources
 		mRIR := GetRIRs()
@@ -91,361 +122,299 @@ func main() {
 		return
 	}
 
-	// TODO: stdin commands instead of flags
-	as := netip.MustParseAddr("23.239.224.0")
-	as = netip.MustParseAddr("13.116.0.21") // ripe
-	// as = netip.MustParseAddr("14.1.96.7")
-	// as = netip.MustParseAddr("45.4.68.1")
-	// oAsn, found := LookupASN(lines, "7903")
-	// as = netip.MustParseAddr("192.91.139.50")
-	fmt.Println(as)
+	sCmds := flag.Args()
+	if len(sCmds) == 0 {
 
-	row, found, E := FindByIp(db, as)
-	if E != nil {
-		return
-	}
-
-	// row, found, E = FindByAsn(db, "arin", "7903")
-	// if E != nil {
-	// 	return
-	// }
-
-	if found {
-		sAssoc, e2 := row.FindAssociated(db)
-		if e2 != nil {
-			E = e2
-			return
-		}
-		for ix := range sAssoc {
-			bsPretty := sAssoc[ix].Pretty()
-			os.Stdout.Write(bsPretty)
-			os.Stdout.Write([]byte("\n"))
-		}
-	} else {
-		fmt.Println("NOT FOUND")
-	}
-
-	return
-}
-
-func (r Row) FindAssociated(db *bbolt.DB) ([]Row, error) {
-
-	// start transaction
-	tx, err := db.Begin(false)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	// fetch buckets
-	bktIdIx, err := GetBucket(tx, BiId2Ix.Key())
-	if err != nil {
-		return nil, err
-	}
-
-	bktReg, err := GetBucket(bktIdIx, r.Registry)
-	if err != nil {
-		return nil, err
-	}
-
-	bktId := bktReg.Bucket(r.RegId)
-	if bktId == nil {
-		return nil, nil
-	}
-
-	bktRows, err := GetBucket(tx, BiRow.Key())
-	if err != nil {
-		return nil, err
-	}
-
-	ret := make([]Row, 0)
-	err = bktId.ForEach(func(k, v []byte) error {
-		if v := bktRows.Get(k); len(v) > 0 {
-			row, e2 := ParseRow(v, true)
-			if e2 != nil {
-				return e2
+		// stdin command mode
+		pSc := bufio.NewScanner(os.Stdin)
+		for pSc.Scan() {
+			if err := mode.doREPL(db, pSc.Text()); err != nil {
+				mode.printErr(err)
 			}
-			ret = append(ret, row)
 		}
+		// check for scanner errs
+		if E = pSc.Err(); E != nil {
+			return
+		}
+
+	} else {
+
+		// args command mode
+		for ix := range sCmds {
+
+			// abort on first error in args mode
+			if err := mode.doREPL(db, sCmds[ix]); err != nil {
+				E = err
+				return
+			}
+		}
+	}
+
+	/*
+		23.239.224.0
+		13.116.0.21
+
+		146978
+		14061 // DIGITALOCEAN
+		328499
+		7903
+	*/
+
+	/*
+		TODO:
+			- ASN name search (API)
+
+					https://ftp.arin.net/pub/stats/ripencc/delegated-ripencc-latest
+					https://ftp.ripe.net/ripe/asnames/asn.txt
+					https://ftp.arin.net/info/asn.txt
+					https://stat.ripe.net/data/as-overview/data.json?resource=AS14061
+
+					https://stat.ripe.net/docs/02.data-api/abuse-contact-finder.html
+					https://securitytrails.com/blog/asn-lookup
+					https://bgp.potaroo.net/cidr/autnums.html
+
+			- unit tests
+
+			- RIPE ASNs for DO
+
+					ripencc|US|asn|200130|1|20131001|allocated|7f14c7cb-6fba-4d73-ade6-8ab7cd032bc0
+					ripencc|US|asn|201229|
+					ripencc|US|asn|202018|
+					ripencc|US|asn|202109|
+	*/
+
+	return
+}
+
+func (m *Modes) printErr(err error) {
+	if err == nil {
+		return
+	}
+	if m.Color {
+		fmt.Fprintln(os.Stderr, "\x1b[91;1m"+"error"+"\x1b[0m: "+err.Error())
+	} else {
+		fmt.Fprintln(os.Stderr, "error: "+err.Error())
+	}
+}
+
+func (m *Modes) printResult(sRows []Row) {
+
+	if len(sRows) == 0 {
+		return
+	}
+
+	keys := []string{"ipv4", "ipv6", "asn"}
+	mSorted := SortRows(sRows)
+
+	// walk groups
+	for _, key := range keys {
+
+		// get group rows
+		spr := mSorted[key]
+		if len(spr) == 0 {
+			continue
+		}
+
+		// print rows
+		if m.Pretty {
+			for _, pRow := range spr {
+				printPretty(os.Stdout, pRow)
+			}
+		} else {
+			for _, pRow := range spr {
+				printPlain(os.Stdout, pRow)
+			}
+		}
+	}
+}
+
+func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
+
+	row, assoc, err := m.execCmd(db, cmd)
+	if err != nil {
+		return err
+	}
+
+	// single-row OR all associated rows
+	sRows := []Row{*row}
+	if assoc {
+		if sRows, err = row.FindAssociated(db); err != nil {
+			return err
+		}
+	}
+
+	m.printResult(sRows)
+	return nil
+}
+
+func printPlainRow(out io.Writer, s [][]byte) error {
+	if len(s) > 0 {
+		_, err := out.Write(append(bytes.Join(s, []byte{'|'}), '\n'))
+		return err
+	}
+	return nil
+}
+
+func printPlain(out io.Writer, pR *Row) error {
+
+	if pR.IsType("asn") {
+		return printPlainRow(out, [][]byte{
+			pR.Registry, pR.Cc, pR.Type,
+			pR.Start, pR.Value, pR.Date, pR.Status,
+		})
+	}
+
+	for _, ipr := range pR.IpRange {
+		err := printPlainRow(out, [][]byte{
+			pR.Registry, pR.Cc, pR.Type,
+			[]byte(ipr.String()), pR.Date, pR.Status,
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type ColCfg struct {
+	Txt []byte
+	Wid int
+	Rt  bool
+}
+
+func PrintCols(out io.Writer, part []ColCfg) error {
+
+	var err error
+	cpos := 1
+	for ix, rc := range part {
+
+		// right pad
+		if rc.Rt {
+			_, err = fmt.Fprintf(out, "\x1b[%dG", cpos+rc.Wid-len(rc.Txt))
+			if err != nil {
+				return err
+			}
+		}
+
+		// data
+		if _, err = out.Write(rc.Txt); err != nil {
+			return err
+		}
+
+		// skip last column separator
+		if ix == (len(part) - 1) {
+			break
+		}
+
+		// track cursor position
+		cpos += rc.Wid
+		if _, err = fmt.Fprintf(out, "\x1b[%dG | ", cpos); err != nil {
+			return err
+		}
+		cpos += 3
+	}
+
+	_, err = fmt.Fprintln(out, "")
+	return err
+}
+
+func fmtDate(in []byte) []byte {
+	if len(in) < 8 {
+		return in
+	}
+	return bytes.Join([][]byte{in[:4], in[4:6], in[6:]}, []byte{'-'})
+}
+
+func printPretty(out io.Writer, pR *Row) error {
+
+	if pR == nil {
 		return nil
-	})
-	return ret, err
-}
-
-func FindByAsn(db *bbolt.DB, registry, asn string) (ret Row, found bool, err error) {
-
-	// start transaction
-	tx, err := db.Begin(false)
-	if err != nil {
-		return
-	}
-	defer tx.Rollback()
-
-	// ASN index bucket
-	bktAsn, err := GetBucket(tx, BiAsn.Key())
-	if err != nil {
-		return
 	}
 
-	// lookup row index
-	rowIx := bktAsn.Get([]byte(registry + "|" + asn))
-	if rowIx == nil {
-		return
-	}
-
-	// row data bucket
-	bktRows, err := GetBucket(tx, BiRow.Key())
-	if err != nil {
-		return
-	}
-
-	// get row data from row index
-	bsRow := bktRows.Get(rowIx)
-	if len(bsRow) == 0 {
-		return
-	}
-
-	// parse row data into struct
-	found = true
-	ret, err = ParseRow(bsRow, false)
-	return
-}
-
-func FindByIp(db *bbolt.DB, as netip.Addr) (ret Row, found bool, err error) {
-
-	if !as.IsValid() {
-		return
-	}
-
-	// start transaction
-	tx, err := db.Begin(false)
-	if err != nil {
-		return
-	}
-	defer tx.Rollback()
-
-	// fetch buckets
-	bktRows, err := GetBucket(tx, BiRow.Key())
-	if err != nil {
-		return
-	}
-
-	ipix := BiV4
-	if as.Is6() {
-		ipix = BiV6
-	}
-	bktIp, err := GetBucket(tx, ipix.Key())
-	if err != nil {
-		return
-	}
-
-	// lookup row index by ip
-	binIpAddr := as.AsSlice()
-	curBktIp := bktIp.Cursor()
-	k, v := curBktIp.Seek(binIpAddr)
-
-	tryReSeek := true
-
-	// case: not found, or in last network range
-	if k == nil {
-		// fetch row index of last network range
-		k, v = curBktIp.Last()
-		if k == nil {
-			return
-		}
-		tryReSeek = false
-	}
-
-RESEEK:
-
-	// get row data from row index
-	bsRow := bktRows.Get(v)
-	if len(bsRow) == 0 {
-		return
-	}
-
-	// parse row data into struct
-	ret, err = ParseRow(bsRow, true)
-	if err != nil {
-		return
-	}
-
-	// check for range membership
-	for j := range ret.IpRange {
-		if ret.IpRange[j].Contains(as) {
-			found = true
-			return
-		}
-	}
-
-	// backtrack once
-	if tryReSeek {
-		tryReSeek = false
-		k, v = curBktIp.Prev()
-		if k != nil {
-			goto RESEEK
-		}
-	}
-
-	return
-}
-
-type Row struct {
-	Registry []byte
-	Cc       []byte
-	Type     []byte
-	Start    []byte
-	Value    []byte
-	Date     []byte
-	Status   []byte
-	RegId    []byte
-
-	ValueInt int
-	IpStart  netip.Addr
-	IpRange  []netip.Prefix
-}
-
-func (pR *Row) AsnKey() []byte {
-	return bytes.Join([][]byte{pR.Registry, pR.Start}, []byte("|"))
-}
-
-func (pR *Row) IsType(s ...string) bool {
-	for ix := range s {
-		if bytes.Equal(pR.Type, []byte(s[ix])) {
-			return true
-		}
-	}
-	return false
-}
-
-func (pR *Row) Raw() []byte {
-	s := [][]byte{
-		pR.Registry,
-		pR.Cc,
-		pR.Type,
-		pR.Start,
-		pR.Value,
-		pR.Date,
-		pR.Status,
-		pR.RegId,
-	}
-	return bytes.Join(s, []byte("|"))
-}
-
-func (pR *Row) Pretty() []byte {
-
-	s := make([][]byte, 0, 7)
-	s = append(s, pR.Registry, pR.Cc, pR.Type)
+	/*
+		TODO:
+			- decode country
+			- test iprange looping (multiple CIDRs in one row)
+	*/
 
 	if pR.IsType("asn") {
 
-		s = append(s, pR.Start, pR.Value)
+		part := []ColCfg{
+			ColCfg{Txt: pR.Registry, Wid: 9},
+			ColCfg{Txt: pR.Cc, Wid: 3},
+			ColCfg{Txt: pR.Type, Wid: 4},
+			ColCfg{Txt: pR.Start, Wid: 10, Rt: true},
+			ColCfg{Txt: pR.Value, Wid: 10, Rt: true},
+			ColCfg{Txt: fmtDate(pR.Date), Wid: 10},
+			ColCfg{Txt: pR.Status, Wid: 10},
+		}
 
-	} else {
-
-		// TODO: print row multiple times for each subnet
-		if len(pR.IpRange) > 0 {
-			sRng := make([]string, 0, len(pR.IpRange))
-			for _, r := range pR.IpRange {
-				if r.IsValid() {
-					sRng = append(sRng, r.String())
-				}
-			}
-			if len(sRng) > 0 {
-				s = append(s, []byte(strings.Join(sRng, ",")))
-			}
+		if err := PrintCols(out, part); err != nil {
+			return err
 		}
 	}
 
-	s = append(s, pR.Date, pR.Status) //, pR.RegId)
+	// print row multiple times for each subnet
+	for _, r := range pR.IpRange {
 
-	// TODO: tabularize in TTY mode
-	return bytes.Join(s, []byte("|"))
+		if !r.IsValid() {
+			continue
+		}
+
+		part := []ColCfg{
+			ColCfg{Txt: pR.Registry, Wid: 9},
+			ColCfg{Txt: pR.Cc, Wid: 3},
+			ColCfg{Txt: pR.Type, Wid: 4},
+			ColCfg{Txt: []byte(r.String()), Wid: 23, Rt: true},
+			ColCfg{Txt: fmtDate(pR.Date), Wid: 10},
+			ColCfg{Txt: pR.Status, Wid: 10},
+		}
+
+		if err := PrintCols(out, part); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
-func ParseRow(line []byte, bFillRange bool) (ret Row, err error) {
+var rxAssoc *regexp.Regexp = regexp.MustCompile(`^\s*(.*)\s*\|a\s*$`)
+var rxASN *regexp.Regexp = regexp.MustCompile(`^\s*AS(\d+)\s*$`)
 
-	row := bytes.Split(line, []byte("|"))
+func (m *Modes) execCmd(db *bbolt.DB, cmd string) (
+	row *Row, assoc bool, err error,
+) {
 
-	// NOTE: Clone() to ensure we're not referencing
-	// something else's slice
-	for ix := range row {
-		val := Clone(bytes.TrimSpace(row[ix]))
-		switch ix {
-		case 0:
-			ret.Registry = val
-		case 1:
-			ret.Cc = val
-		case 2:
-			ret.Type = val
-		case 3:
-			ret.Start = val
-		case 4:
-			ret.Value = val
-		case 5:
-			ret.Date = val
-		case 6:
-			ret.Status = val
-		case 7:
-			ret.RegId = val
+	cmd = strings.TrimSpace(cmd)
+
+	if m.UpdateFromCmd(cmd) {
+		return
+	}
+
+	// fetch all associated
+	const AllAssocSuffix = ":a"
+	assoc = strings.HasSuffix(cmd, AllAssocSuffix)
+	if assoc {
+		cmd = strings.TrimSuffix(cmd, AllAssocSuffix)
+	}
+
+	// ASN
+	sASN := rxASN.FindStringSubmatch(cmd)
+	if len(sASN) > 1 {
+
+		if nASN, e2 := strconv.ParseUint(sASN[1], 10, 32); e2 != nil {
+			err = errors.WithMessage(e2, "invalid ASN")
+		} else {
+			row, err = FindByAsn(db, uint32(nASN))
 		}
-	}
-
-	nVal, err := strconv.Atoi(string(ret.Value))
-	if err != nil {
-		err = gerr.WithMessage(err, "col 5, number expected")
-		return
-	}
-	ret.ValueInt = nVal
-
-	// early exit for non-ip records
-	is4 := ret.IsType("ipv4")
-	is6 := ret.IsType("ipv6")
-	if !is4 && !is6 {
 		return
 	}
 
-	// first host address
-	ip, e2 := netip.ParseAddr(string(ret.Start))
-	if e2 != nil {
-		err = gerr.WithMessage(err, "col 4, ip addr expected")
-		return
-	}
-	ret.IpStart = ip
-
-	// validate address family
-	if (is4 && !ip.Is4()) || (is6 && !ip.Is6()) {
-		err = gerr.New("ip address / label version mismatch")
+	// IP
+	if ip, e2 := netip.ParseAddr(cmd); e2 == nil {
+		row, err = FindByIp(db, ip)
 		return
 	}
 
-	// skip/proceed with CIDR deaggregation
-	if !bFillRange {
-		return
-	}
-
-	// fill IpRange with list of network prefixes
-	if is6 {
-		ret.IpRange = []netip.Prefix{netip.PrefixFrom(ip, nVal)}
-		return
-	}
-
-	// get base addr as int
-	uBase, ok := range2cidr.V4ToUint32(ip)
-	if !ok {
-		err = gerr.New("failed to convert v4 address to uint32")
-		return
-	}
-
-	// calculate last host addr, then convert back to netip
-	ipLast := range2cidr.Uint32ToV4(uBase + uint32(nVal) - 1)
-
-	// create network masks from range
-	ret.IpRange, e2 = range2cidr.Deaggregate(ip, ipLast)
-	if e2 != nil {
-		err = gerr.WithMessage(e2, "ip deaggregation failure")
-		return
-	}
-
-	return
+	return nil, false, EInvalidQuery
 }
