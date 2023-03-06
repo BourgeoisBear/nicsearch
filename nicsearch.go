@@ -87,10 +87,9 @@ func main() {
 
 	/*
 		TODO:
-			- reindex if db doesn't exist
-			- download if RIR data doesn't exist
-				- notify "first run, downloading"
-			- configurable directory (default to .cache/APPNAME)
+			- errexit w/ msg if db doesn't exist
+			- prompt for download in interactive mode if db is more than N days old
+			- configurable DBDIR (default to .cache/APPNAME)
 	*/
 
 	db, E := bbolt.Open(boltDbFname, 0600, nil)
@@ -282,39 +281,43 @@ type ColCfg struct {
 	Rt  bool
 }
 
-func PrintCols(out io.Writer, part []ColCfg) error {
+var pcbuf []byte
 
-	var err error
-	cpos := 1
-	for ix, rc := range part {
+// NOTE: uses persistent buffer `pcbuf` -- not goroutine safe
+func PrintCols(out io.Writer, sCols []ColCfg) error {
 
-		// right pad
-		if rc.Rt {
-			_, err = fmt.Fprintf(out, "\x1b[%dG", cpos+rc.Wid-len(rc.Txt))
-			if err != nil {
-				return err
-			}
+	// reset line buffer
+	if pcbuf != nil {
+		pcbuf = pcbuf[:0]
+	}
+
+	for ix, col := range sCols {
+
+		pad := col.Wid - len(col.Txt)
+
+		if !col.Rt {
+			pcbuf = append(pcbuf, col.Txt...)
 		}
 
-		// data
-		if _, err = out.Write(rc.Txt); err != nil {
-			return err
+		// padding
+		for i := pad; i > 0; i -= 1 {
+			pcbuf = append(pcbuf, ' ')
+		}
+
+		if col.Rt {
+			pcbuf = append(pcbuf, col.Txt...)
 		}
 
 		// skip last column separator
-		if ix == (len(part) - 1) {
+		if ix == (len(sCols) - 1) {
 			break
 		}
 
-		// track cursor position
-		cpos += rc.Wid
-		if _, err = fmt.Fprintf(out, "\x1b[%dG | ", cpos); err != nil {
-			return err
-		}
-		cpos += 3
+		pcbuf = append(pcbuf, ' ', '|', ' ')
 	}
 
-	_, err = fmt.Fprintln(out, "")
+	pcbuf = append(pcbuf, '\n')
+	_, err := out.Write(pcbuf)
 	return err
 }
 
