@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -13,9 +15,9 @@ import (
 )
 
 type DownloadItem struct {
-	Host     string
-	Path     string
-	Filename string
+	Host    string
+	SrcPath string
+	DstPath string
 }
 
 type RIRKey int
@@ -29,36 +31,39 @@ const (
 	RkMAX
 )
 
-func defaultDownloadItem(host, key string) DownloadItem {
+func defaultRIRItem(dbPath, host, key string) DownloadItem {
 	return DownloadItem{
-		Host:     host,
-		Path:     fmt.Sprintf("pub/stats/%s", key),
-		Filename: fmt.Sprintf("delegated-%s-extended-latest", key),
+		Host:    host,
+		SrcPath: fmt.Sprintf("pub/stats/%[1]s/delegated-%[1]s-extended-latest", key),
+		DstPath: filepath.Join(
+			dbPath,
+			fmt.Sprintf("delegated-%s-extended-latest.txt.gz", key),
+		),
 	}
 }
 
-func GetDefaultDownloadItems() map[RIRKey]DownloadItem {
+func GetRIRDownloadItems(dbPath string) map[RIRKey]DownloadItem {
 	return map[RIRKey]DownloadItem{
-		RkRipe:    defaultDownloadItem("ftp.ripe.net", "ripencc"),
-		RkLacnic:  defaultDownloadItem("ftp.lacnic.net", "lacnic"),
-		RkAfrinic: defaultDownloadItem("ftp.afrinic.net", "afrinic"),
-		RkApnic:   defaultDownloadItem("ftp.apnic.net", "apnic"),
-		RkArin:    defaultDownloadItem("ftp.arin.net", "arin"),
+		RkRipe:    defaultRIRItem(dbPath, "ftp.ripe.net", "ripencc"),
+		RkLacnic:  defaultRIRItem(dbPath, "ftp.lacnic.net", "lacnic"),
+		RkAfrinic: defaultRIRItem(dbPath, "ftp.afrinic.net", "afrinic"),
+		RkApnic:   defaultRIRItem(dbPath, "ftp.apnic.net", "apnic"),
+		RkArin:    defaultRIRItem(dbPath, "ftp.arin.net", "arin"),
 	}
 }
 
 // download extended delegations list from an RIR
-func DownloadAll(oR DownloadItem, dirTmp, dirDst string) error {
+func DownloadAll(out io.Writer, oR DownloadItem, dirTmp string) error {
 
 	const DEBUG = false
 
-	url := fmt.Sprintf("https://%s/%s/%s", oR.Host, oR.Path, oR.Filename)
+	url := fmt.Sprintf("https://%s/%s", oR.Host, oR.SrcPath)
 
 	if DEBUG {
 		url = "http://localhost:9090/delegated-afrinic-extended-latest.txt"
 	}
 
-	fmt.Println("\x1b[1mDOWNLOADING:\x1b[0m", url)
+	fmt.Fprintln(out, "\x1b[1mDOWNLOADING:\x1b[0m", url)
 
 	// request list
 	rsp, err := http.Get(url)
@@ -83,7 +88,8 @@ func DownloadAll(oR DownloadItem, dirTmp, dirDst string) error {
 	}
 
 	// create tempfile for download
-	pF, err := os.CreateTemp(dirTmp, oR.Filename+"-*.gz")
+	dstFname := path.Base(oR.DstPath)
+	pF, err := os.CreateTemp(dirTmp, "*-"+dstFname)
 	if err != nil {
 		return err
 	}
@@ -101,7 +107,7 @@ func DownloadAll(oR DownloadItem, dirTmp, dirDst string) error {
 			os.Remove(tmpname)
 		} else {
 			// move to correct path
-			err = os.Rename(tmpname, dirDst+"/"+oR.Filename+".gz")
+			err = os.Rename(tmpname, oR.DstPath)
 		}
 	}()
 
@@ -116,9 +122,9 @@ func DownloadAll(oR DownloadItem, dirTmp, dirDst string) error {
 
 		if nLen > 0 {
 			pct := (float32(n) / float32(nLen)) * 100.0
-			fmt.Printf("\t\x1b[2K%d/%d (%5.1f%%)\r", n, nLen, pct)
+			fmt.Fprintf(out, "\t\x1b[2K%d/%d (%5.1f%%)\r", n, nLen, pct)
 		} else {
-			fmt.Printf("\t\x1b[2K%d\r", n)
+			fmt.Fprintf(out, "\t\x1b[2K%d\r", n)
 		}
 
 		if DEBUG {
@@ -126,7 +132,7 @@ func DownloadAll(oR DownloadItem, dirTmp, dirDst string) error {
 		}
 
 		if err == io.EOF {
-			fmt.Println("")
+			fmt.Fprintln(out, "")
 			break
 		}
 	}

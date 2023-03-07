@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/mattn/go-isatty"
@@ -58,28 +59,20 @@ func init() {
 	}
 }
 
+func Exists(fname string) bool {
+	if _, err := os.Stat(fname); os.IsNotExist(err) {
+		return false
+	}
+	return true
+}
+
 // ls *.go *.gz | entr -c go run nicsearch.go
 // Ctrl-w N (copy)
 // Ctrl-w "+ (paste)
 func main() {
 
-	DBDIR := "./db"
-
-	var mode Modes
-	bIsTty := false
-	if isatty.IsTerminal(os.Stdout.Fd()) {
-		bIsTty = true
-	}
-
-	// flags
-	var bReIndex, bDownload bool
-	flag.BoolVar(&bReIndex, "reindex", false, "rebuild index into RIR database")
-	flag.BoolVar(&bDownload, "download", false, "download RIR databases")
-	flag.BoolVar(&mode.Color, "color", bIsTty, "force color output on/off")
-	flag.BoolVar(&mode.Pretty, "pretty", bIsTty, "force pretty print on/off")
-	flag.Parse()
-
 	var E error
+	var mode Modes
 	defer func() {
 		if E != nil {
 			mode.printErr(E)
@@ -87,54 +80,79 @@ func main() {
 		}
 	}()
 
-	asnFile := DownloadItem{
-		Host:     "ftp.ripe.net",
-		Path:     "ripe/asnames",
-		Filename: "asn.txt",
+	// TODO: test on windows
+
+	// default to pretty & color if TTY
+	bIsTty := false
+	if isatty.IsTerminal(os.Stdout.Fd()) {
+		bIsTty = true
 	}
 
-	mDlItems := GetDefaultDownloadItems()
+	// default paths
+	dbPath, E := os.UserHomeDir()
+	if E != nil {
+		return
+	}
+	dbPath = filepath.Join(dbPath, ".cache", filepath.Base(os.Args[0]))
 
-	// download
-	if bDownload {
+	// flags
+	var bReIndex, bDownload bool
+	flag.BoolVar(&bReIndex, "reindex", false, "rebuild RIR database index")
+	flag.BoolVar(&bDownload, "download", false, "download RIR databases")
+	flag.BoolVar(&mode.Color, "color", bIsTty, "force color output on/off")
+	flag.BoolVar(&mode.Pretty, "pretty", bIsTty, "force pretty print on/off")
+	flag.StringVar(&dbPath, "dbpath", dbPath, "path to RIR data and index")
+	flag.Parse()
 
-		bReIndex = true
+	// create cache dir
+	if E = os.MkdirAll(dbPath, 0775); E != nil {
+		return
+	}
 
-		// download delegations from each RIR
-		for key := range mDlItems {
-			if E = DownloadAll(mDlItems[key], DBDIR, DBDIR); E != nil {
+	// build file list
+	asnFile := DownloadItem{
+		Host:    "ftp.ripe.net",
+		SrcPath: "ripe/asnames/asn.txt",
+		DstPath: filepath.Join(dbPath, "asn.txt.gz"),
+	}
+	mDlItems := GetRIRDownloadItems(dbPath)
+	sFiles := make([]DownloadItem, 0, len(mDlItems)+1)
+	for _, di := range mDlItems {
+		sFiles = append(sFiles, di)
+	}
+	sFiles = append(sFiles, asnFile)
+
+	// download delegations from each RIR & ASN list from RIPE
+	for _, item := range sFiles {
+		if bDownload || !Exists(item.DstPath) {
+			if !bDownload {
+				fmt.Fprintf(os.Stderr, "'%s' NOT FOUND: DOWNLOADING RIR DATA\n", item.DstPath)
+			}
+			if E = DownloadAll(os.Stderr, item, dbPath); E != nil {
 				return
 			}
-		}
-
-		// download ASN list
-		E = DownloadAll(asnFile, DBDIR, DBDIR)
-		if E != nil {
-			return
+			bReIndex = true
 		}
 	}
 
-	// bolt
-	boltDbFname := DBDIR + "/nicsearch.db"
+	// force re-index if DB is not found
+	boltDbFname := filepath.Join(dbPath, "nicsearch.db")
+	if !bReIndex && !Exists(boltDbFname) {
+		fmt.Fprintf(os.Stderr, "'%s' NOT FOUND: RE-INDEXING\n", boltDbFname)
+		bReIndex = true
+	}
 
+	// init boltdb
 	if bReIndex {
 		os.Remove(boltDbFname)
 	}
-
-	/*
-		TODO:
-			- errexit w/ msg if db doesn't exist
-			- prompt for download in interactive mode if db is more than N days old
-			- configurable DBDIR (default to .cache/APPNAME)
-			- test on windows
-	*/
-
-	db, E := bbolt.Open(boltDbFname, 0600, nil)
+	db, E := bbolt.Open(boltDbFname, 0664, nil)
 	if E != nil {
 		return
 	}
 	defer db.Close()
 
+	// rebuild index
 	if bReIndex {
 
 		// create buckets
@@ -146,20 +164,20 @@ func main() {
 
 		// fill from sources
 		for key := range mDlItems {
-			fname := DBDIR + "/" + mDlItems[key].Filename + ".gz"
-			fmt.Printf("\x1b[1mINDEXING:\x1b[0m %s\n", fname)
-			if E = GzRead(fname, pBkt.FillDelegations); E != nil {
+			fname := mDlItems[key].DstPath
+			fmt.Fprintf(os.Stderr, "\x1b[1mINDEXING:\x1b[0m %s\n", fname)
+			if E = pBkt.GzRead(fname, pBkt.scanlnDelegation); E != nil {
 				return
 			}
 		}
 
 		// fill ASN lookup
-		fname := DBDIR + "/" + asnFile.Filename + ".gz"
-		fmt.Printf("\x1b[1mINDEXING:\x1b[0m %s\n", fname)
-		E = GzRead(fname, pBkt.FillASNList)
-		return
+		fname := asnFile.DstPath
+		fmt.Fprintf(os.Stderr, "\x1b[1mINDEXING:\x1b[0m %s\n", fname)
+		E = pBkt.GzRead(fname, pBkt.scanlnAsName)
 	}
 
+	// command REPL
 	sCmds := flag.Args()
 	if len(sCmds) == 0 {
 

@@ -97,6 +97,8 @@ func GetBucket(ib IHasBucket, bsKey []byte) (*bbolt.Bucket, error) {
 type BktFiller struct {
 	db          *bbolt.DB
 	ixRowGlobal uint32
+
+	bSkipFirstDataRow bool
 }
 
 func CreateBktFiller(db *bbolt.DB) (*BktFiller, error) {
@@ -141,9 +143,12 @@ func GetGzipSize(pF *os.File) (uint32, error) {
 	return nLen, err
 }
 
-type GzReadFunc func(io.Reader, string, uint32) error
+type GzReadFunc func(
+	bkt []*bbolt.Bucket,
+	bsLine []byte,
+) error
 
-func GzRead(fname string, fnRead GzReadFunc) error {
+func (pb *BktFiller) GzRead(fname string, fnRead GzReadFunc) error {
 
 	// raw gzipped data
 	pF, err := os.Open(fname)
@@ -153,10 +158,11 @@ func GzRead(fname string, fnRead GzReadFunc) error {
 	defer pF.Close()
 
 	// unzipped size (for progress report)
-	nLen, err := GetGzipSize(pF)
+	ucLen32, err := GetGzipSize(pF)
 	if err != nil {
 		return err
 	}
+	ucLen := uint64(ucLen32)
 
 	// gunzip
 	gzr, err := gzip.NewReader(pF)
@@ -164,84 +170,6 @@ func GzRead(fname string, fnRead GzReadFunc) error {
 		return err
 	}
 	defer gzr.Close()
-
-	// read
-	return fnRead(gzr, fname, nLen)
-}
-
-func (pb *BktFiller) FillASNList(
-	iRdr io.Reader, fname string, ucLen uint32,
-) error {
-
-	// start transaction
-	tx, eTx := pb.db.Begin(true)
-	if eTx != nil {
-		return eTx
-	}
-	defer tx.Rollback()
-
-	// get buckets
-	bktAsName := tx.Bucket(BiAsName.Key())
-	bsASN := make([]byte, 4)
-	nBytesRead := 0
-
-	defer func() {
-		fmt.Println("")
-	}()
-
-	rxSplit := regexp.MustCompile(`^\s*([0-9]+)\s+(.+)\s*$`)
-
-	// scan tokens
-	pSc := bufio.NewScanner(iRdr)
-	var ixFileLine uint32
-	for pSc.Scan() {
-
-		ixFileLine += 1
-		bsLine := pSc.Bytes()
-
-		// NOTE: +1 for the '\n' omitted by bufio.Scanner
-		nBytesRead += len(bsLine) + 1
-
-		// only update progress every 100 rows
-		if (ixFileLine%100) == 0 || (nBytesRead >= int(ucLen)) {
-			pct := (float32(nBytesRead) / float32(ucLen)) * 100.0
-			fmt.Printf("\t\x1b[2K%d/%d (%5.1f%%)\r", nBytesRead, ucLen, pct)
-		}
-
-		// skip empty
-		if len(bsLine) == 0 {
-			continue
-		}
-
-		sMatch := rxSplit.FindSubmatch(bsLine)
-		if len(sMatch) < 3 {
-			continue
-		}
-
-		nASN, err := strconv.ParseUint(string(sMatch[1]), 10, 32)
-		if err != nil {
-			continue
-		}
-
-		binary.BigEndian.PutUint32(bsASN, uint32(nASN))
-		if err := bktAsName.Put(bsASN, Clone(sMatch[2])); err != nil {
-			err = fmt.Errorf("%s|line %d|\"%s\"|%w", fname, ixFileLine, string(bsLine), err)
-			fmt.Fprintln(os.Stderr, err)
-		}
-	}
-
-	// check for scanner errs
-	if err := pSc.Err(); err != nil {
-		return err
-	}
-
-	// commit the transaction
-	return tx.Commit()
-}
-
-func (pb *BktFiller) FillDelegations(
-	iRdr io.Reader, fname string, ucLen uint32,
-) error {
 
 	// start transaction
 	tx, eTx := pb.db.Begin(true)
@@ -256,60 +184,38 @@ func (pb *BktFiller) FillDelegations(
 		bkt[ix] = tx.Bucket(ix.Key())
 	}
 
-	bsRowIx := make([]byte, 4)
-
-	nBytesRead := 0
-
 	defer func() {
-		fmt.Println("")
+		fmt.Fprintln(os.Stderr, "")
 	}()
 
 	// scan tokens
-	bFirstData := true
-	pSc := bufio.NewScanner(iRdr)
-	var ixFileLine uint32
+	pb.bSkipFirstDataRow = true
+	pSc := bufio.NewScanner(gzr)
+	var ixFileLine, nBytesRead uint64
 	for pSc.Scan() {
 
-		ixFileLine += 1
 		bsLine := pSc.Bytes()
-
-		// NOTE: +1 for the '\n' omitted by bufio.Scanner
-		nBytesRead += len(bsLine) + 1
+		ixFileLine += 1
+		nBytesRead += uint64(len(bsLine) + 1) // +1 for '\n'
 
 		// only update progress every 100 rows
-		if (ixFileLine%100) == 0 || (nBytesRead >= int(ucLen)) {
-			pct := (float32(nBytesRead) / float32(ucLen)) * 100.0
-			fmt.Printf("\t\x1b[2K%d/%d (%5.1f%%)\r", nBytesRead, ucLen, pct)
+		if (ixFileLine%100) == 0 || (nBytesRead >= ucLen) {
+			pct := (float64(nBytesRead) / float64(ucLen)) * 100.0
+			fmt.Fprintf(
+				os.Stderr,
+				"\t\x1b[2K%d/%d (%5.1f%%)\r",
+				nBytesRead, ucLen, pct,
+			)
 		}
 
-		bsLine = bytes.TrimSpace(bsLine)
-
 		// skip empty
+		bsLine = bytes.TrimSpace(bsLine)
 		if len(bsLine) == 0 {
 			continue
 		}
 
-		// skip comments
-		if bytes.HasPrefix(bsLine, []byte("#")) {
-			continue
-		}
-
-		// skip first data row
-		if bFirstData {
-			bFirstData = false
-			continue
-		}
-
-		// skip summaries
-		if bytes.HasSuffix(bsLine, []byte("|summary")) {
-			continue
-		}
-
-		// increment row pk, encode to []byte
-		pb.ixRowGlobal += 1
-		binary.BigEndian.PutUint32(bsRowIx, pb.ixRowGlobal)
-
-		if err := insertRow(bkt, bsRowIx, bsLine); err != nil {
+		err := fnRead(bkt, bsLine)
+		if err != nil {
 			err = fmt.Errorf("%s|line %d|\"%s\"|%w", fname, ixFileLine, string(bsLine), err)
 			fmt.Fprintln(os.Stderr, err)
 		}
@@ -322,6 +228,55 @@ func (pb *BktFiller) FillDelegations(
 
 	// commit the transaction
 	return tx.Commit()
+}
+
+var g_rxSplitAsn *regexp.Regexp = regexp.MustCompile(`^\s*([0-9]+)\s+(.+)\s*$`)
+
+func (pb *BktFiller) scanlnAsName(bkt []*bbolt.Bucket, bsLine []byte) error {
+
+	// get buckets
+	bktAsName := bkt[BiAsName]
+
+	// extract ASN & description from line
+	sMatch := g_rxSplitAsn.FindSubmatch(bsLine)
+	if len(sMatch) < 3 {
+		return nil
+	}
+
+	nASN, err := strconv.ParseUint(string(sMatch[1]), 10, 32)
+	if err != nil {
+		return nil
+	}
+
+	// add to kv store
+	var bsASN [4]byte
+	binary.BigEndian.PutUint32(bsASN[:], uint32(nASN))
+	return bktAsName.Put(bsASN[:], Clone(sMatch[2]))
+}
+
+func (pb *BktFiller) scanlnDelegation(bkt []*bbolt.Bucket, bsLine []byte) error {
+
+	// skip comments
+	if bytes.HasPrefix(bsLine, []byte("#")) {
+		return nil
+	}
+
+	// skip first data row
+	if pb.bSkipFirstDataRow {
+		pb.bSkipFirstDataRow = false
+		return nil
+	}
+
+	// skip summaries
+	if bytes.HasSuffix(bsLine, []byte("|summary")) {
+		return nil
+	}
+
+	// increment row pk, encode to []byte
+	pb.ixRowGlobal += 1
+	var bsRowIx [4]byte
+	binary.BigEndian.PutUint32(bsRowIx[:], pb.ixRowGlobal)
+	return insertRow(bkt, bsRowIx[:], bsLine)
 }
 
 func insertRow(bkt []*bbolt.Bucket, bsRowIx, bsLine []byte) error {
