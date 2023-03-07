@@ -12,7 +12,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-type RIR struct {
+type DownloadItem struct {
 	Host     string
 	Path     string
 	Filename string
@@ -29,26 +29,26 @@ const (
 	RkMAX
 )
 
-func defaultRIR(host, key string) RIR {
-	return RIR{
+func defaultDownloadItem(host, key string) DownloadItem {
+	return DownloadItem{
 		Host:     host,
 		Path:     fmt.Sprintf("pub/stats/%s", key),
 		Filename: fmt.Sprintf("delegated-%s-extended-latest", key),
 	}
 }
 
-func GetRIRs() map[RIRKey]RIR {
-	return map[RIRKey]RIR{
-		RkRipe:    defaultRIR("ftp.ripe.net", "ripencc"),
-		RkLacnic:  defaultRIR("ftp.lacnic.net", "lacnic"),
-		RkAfrinic: defaultRIR("ftp.afrinic.net", "afrinic"),
-		RkApnic:   defaultRIR("ftp.apnic.net", "apnic"),
-		RkArin:    defaultRIR("ftp.arin.net", "arin"),
+func GetDefaultDownloadItems() map[RIRKey]DownloadItem {
+	return map[RIRKey]DownloadItem{
+		RkRipe:    defaultDownloadItem("ftp.ripe.net", "ripencc"),
+		RkLacnic:  defaultDownloadItem("ftp.lacnic.net", "lacnic"),
+		RkAfrinic: defaultDownloadItem("ftp.afrinic.net", "afrinic"),
+		RkApnic:   defaultDownloadItem("ftp.apnic.net", "apnic"),
+		RkArin:    defaultDownloadItem("ftp.arin.net", "arin"),
 	}
 }
 
 // download extended delegations list from an RIR
-func DownloadRIRD(oR RIR, dirTmp, dirDst string) error {
+func DownloadAll(oR DownloadItem, dirTmp, dirDst string) error {
 
 	const DEBUG = false
 

@@ -87,11 +87,13 @@ func main() {
 		}
 	}()
 
-	asnFile := RIR{
+	asnFile := DownloadItem{
 		Host:     "ftp.ripe.net",
 		Path:     "ripe/asnames",
 		Filename: "asn.txt",
 	}
+
+	mDlItems := GetDefaultDownloadItems()
 
 	// download
 	if bDownload {
@@ -99,15 +101,14 @@ func main() {
 		bReIndex = true
 
 		// download delegations from each RIR
-		mRIR := GetRIRs()
-		for key := range mRIR {
-			if E = DownloadRIRD(mRIR[key], DBDIR, DBDIR); E != nil {
+		for key := range mDlItems {
+			if E = DownloadAll(mDlItems[key], DBDIR, DBDIR); E != nil {
 				return
 			}
 		}
 
 		// download ASN list
-		E = DownloadRIRD(asnFile, DBDIR, DBDIR)
+		E = DownloadAll(asnFile, DBDIR, DBDIR)
 		if E != nil {
 			return
 		}
@@ -125,6 +126,7 @@ func main() {
 			- errexit w/ msg if db doesn't exist
 			- prompt for download in interactive mode if db is more than N days old
 			- configurable DBDIR (default to .cache/APPNAME)
+			- test on windows
 	*/
 
 	db, E := bbolt.Open(boltDbFname, 0600, nil)
@@ -143,9 +145,8 @@ func main() {
 		}
 
 		// fill from sources
-		mRIR := GetRIRs()
-		for key := range mRIR {
-			fname := DBDIR + "/" + mRIR[key].Filename + ".gz"
+		for key := range mDlItems {
+			fname := DBDIR + "/" + mDlItems[key].Filename + ".gz"
 			fmt.Printf("\x1b[1mINDEXING:\x1b[0m %s\n", fname)
 			if E = GzRead(fname, pBkt.FillDelegations); E != nil {
 				return
