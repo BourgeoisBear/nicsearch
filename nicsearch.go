@@ -6,14 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/netip"
 	"os"
-	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/mattn/go-isatty"
-	"github.com/pkg/errors"
 	"go.etcd.io/bbolt"
 )
 
@@ -32,6 +28,34 @@ func (m *Modes) UpdateFromCmd(cmd string) bool {
 		return false
 	}
 	return true
+}
+
+var g_colWri ColWriter
+var g_ccfgASN, g_ccfgIP []ColCfg
+
+func init() {
+
+	g_colWri = ColWriter{}
+
+	g_ccfgASN = []ColCfg{
+		ColCfg{Wid: 9},
+		ColCfg{Wid: 3},
+		ColCfg{Wid: 4},
+		ColCfg{Wid: 10, Rt: true},
+		ColCfg{Wid: 10, Rt: true},
+		ColCfg{Wid: 10},
+		ColCfg{Wid: 10},
+		ColCfg{},
+	}
+
+	g_ccfgIP = []ColCfg{
+		ColCfg{Wid: 9},
+		ColCfg{Wid: 3},
+		ColCfg{Wid: 4},
+		ColCfg{Wid: 23, Rt: true},
+		ColCfg{Wid: 10},
+		ColCfg{Wid: 10},
+	}
 }
 
 // ls *.go *.gz | entr -c go run nicsearch.go
@@ -63,6 +87,12 @@ func main() {
 		}
 	}()
 
+	asnFile := RIR{
+		Host:     "ftp.ripe.net",
+		Path:     "ripe/asnames",
+		Filename: "asn.txt",
+	}
+
 	// download
 	if bDownload {
 
@@ -71,10 +101,15 @@ func main() {
 		// download delegations from each RIR
 		mRIR := GetRIRs()
 		for key := range mRIR {
-			E = DownloadRIRD(mRIR[key], DBDIR, DBDIR)
-			if E != nil {
+			if E = DownloadRIRD(mRIR[key], DBDIR, DBDIR); E != nil {
 				return
 			}
+		}
+
+		// download ASN list
+		E = DownloadRIRD(asnFile, DBDIR, DBDIR)
+		if E != nil {
+			return
 		}
 	}
 
@@ -110,14 +145,17 @@ func main() {
 		// fill from sources
 		mRIR := GetRIRs()
 		for key := range mRIR {
-			fname := DBDIR + "/" + mRIR[key].Filename + ".txt.gz"
+			fname := DBDIR + "/" + mRIR[key].Filename + ".gz"
 			fmt.Printf("\x1b[1mINDEXING:\x1b[0m %s\n", fname)
-			E = pBkt.FillFromFile(fname)
-			if E != nil {
+			if E = GzRead(fname, pBkt.FillDelegations); E != nil {
 				return
 			}
 		}
 
+		// fill ASN lookup
+		fname := DBDIR + "/" + asnFile.Filename + ".gz"
+		fmt.Printf("\x1b[1mINDEXING:\x1b[0m %s\n", fname)
+		E = GzRead(fname, pBkt.FillASNList)
 		return
 	}
 
@@ -149,39 +187,6 @@ func main() {
 		}
 	}
 
-	/*
-		23.239.224.0
-		13.116.0.21
-
-		146978
-		14061 // DIGITALOCEAN
-		328499
-		7903
-	*/
-
-	/*
-		TODO:
-			- ASN name search (API)
-
-					https://ftp.arin.net/pub/stats/ripencc/delegated-ripencc-latest
-					https://ftp.ripe.net/ripe/asnames/asn.txt
-					https://ftp.arin.net/info/asn.txt
-					https://stat.ripe.net/data/as-overview/data.json?resource=AS14061
-
-					https://stat.ripe.net/docs/02.data-api/abuse-contact-finder.html
-					https://securitytrails.com/blog/asn-lookup
-					https://bgp.potaroo.net/cidr/autnums.html
-
-			- unit tests
-
-			- RIPE ASNs for DO
-
-					ripencc|US|asn|200130|1|20131001|allocated|7f14c7cb-6fba-4d73-ade6-8ab7cd032bc0
-					ripencc|US|asn|201229|
-					ripencc|US|asn|202018|
-					ripencc|US|asn|202109|
-	*/
-
 	return
 }
 
@@ -196,14 +201,24 @@ func (m *Modes) printErr(err error) {
 	}
 }
 
-func (m *Modes) printResult(sRows []Row) {
+func (m *Modes) printRowsSorted(db *bbolt.DB, sRows []Row) error {
 
 	if len(sRows) == 0 {
-		return
+		return nil
 	}
 
 	keys := []string{"ipv4", "ipv6", "asn"}
 	mSorted := SortRows(sRows)
+
+	// lookup asnames
+	sASN := mSorted["asn"]
+	var err error
+	for ix := range sASN {
+		sASN[ix].AsName, err = FindAsName(db, sASN[ix].ASN)
+		if err != nil {
+			return err
+		}
+	}
 
 	// walk groups
 	for _, key := range keys {
@@ -215,110 +230,61 @@ func (m *Modes) printResult(sRows []Row) {
 		}
 
 		// print rows
-		if m.Pretty {
-			for _, pRow := range spr {
-				printPretty(os.Stdout, pRow)
-			}
-		} else {
-			for _, pRow := range spr {
-				printPlain(os.Stdout, pRow)
+		for _, pRow := range spr {
+			if err := m.printRow(os.Stdout, pRow); err != nil {
+				return err
 			}
 		}
 	}
+
+	return nil
 }
 
 func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
 
-	row, assoc, err := m.execCmd(db, cmd)
+	cmd = strings.TrimSpace(cmd)
+	if m.UpdateFromCmd(cmd) {
+		return nil
+	}
+
+	iCmd, err := m.ParseCmd(cmd)
 	if err != nil {
 		return err
 	}
 
-	// single-row OR all associated rows
+	var row *Row
+	var assoc bool
+	switch v := iCmd.(type) {
+	case CmdIP:
+		assoc = v.Assoc
+		row, err = FindByIp(db, v.IP)
+	case CmdASN:
+		assoc = v.Assoc
+		row, err = FindByAsn(db, v.ASN)
+	case CmdCC:
+		bsCC := []byte("|" + v.CC + "|")
+		return WalkRawRows(db, func(k, v []byte) error {
+			if !bytes.Contains(v, bsCC) {
+				return nil
+			}
+			if row, e2 := ParseRow(v, true); e2 != nil {
+				return e2
+			} else {
+				return m.printRow(os.Stdout, &row)
+			}
+		})
+	}
+
+	if row == nil {
+		return nil
+	}
 	sRows := []Row{*row}
 	if assoc {
 		if sRows, err = row.FindAssociated(db); err != nil {
 			return err
 		}
 	}
-
-	m.printResult(sRows)
-	return nil
-}
-
-func printPlainRow(out io.Writer, s [][]byte) error {
-	if len(s) > 0 {
-		_, err := out.Write(append(bytes.Join(s, []byte{'|'}), '\n'))
-		return err
-	}
-	return nil
-}
-
-func printPlain(out io.Writer, pR *Row) error {
-
-	if pR.IsType("asn") {
-		return printPlainRow(out, [][]byte{
-			pR.Registry, pR.Cc, pR.Type,
-			pR.Start, pR.Value, pR.Date, pR.Status,
-		})
-	}
-
-	for _, ipr := range pR.IpRange {
-		err := printPlainRow(out, [][]byte{
-			pR.Registry, pR.Cc, pR.Type,
-			[]byte(ipr.String()), pR.Date, pR.Status,
-		})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-type ColCfg struct {
-	Txt []byte
-	Wid int
-	Rt  bool
-}
-
-var pcbuf []byte
-
-// NOTE: uses persistent buffer `pcbuf` -- not goroutine safe
-func PrintCols(out io.Writer, sCols []ColCfg) error {
-
-	// reset line buffer
-	if pcbuf != nil {
-		pcbuf = pcbuf[:0]
-	}
-
-	for ix, col := range sCols {
-
-		pad := col.Wid - len(col.Txt)
-
-		if !col.Rt {
-			pcbuf = append(pcbuf, col.Txt...)
-		}
-
-		// padding
-		for i := pad; i > 0; i -= 1 {
-			pcbuf = append(pcbuf, ' ')
-		}
-
-		if col.Rt {
-			pcbuf = append(pcbuf, col.Txt...)
-		}
-
-		// skip last column separator
-		if ix == (len(sCols) - 1) {
-			break
-		}
-
-		pcbuf = append(pcbuf, ' ', '|', ' ')
-	}
-
-	pcbuf = append(pcbuf, '\n')
-	_, err := out.Write(pcbuf)
-	return err
+	return m.printRowsSorted(db, sRows)
 }
 
 func fmtDate(in []byte) []byte {
@@ -328,33 +294,32 @@ func fmtDate(in []byte) []byte {
 	return bytes.Join([][]byte{in[:4], in[4:6], in[6:]}, []byte{'-'})
 }
 
-func printPretty(out io.Writer, pR *Row) error {
+func (m *Modes) printRow(out io.Writer, pR *Row) error {
 
 	if pR == nil {
 		return nil
 	}
 
-	/*
-		TODO:
-			- decode country
-			- test iprange looping (multiple CIDRs in one row)
-	*/
+	var wriCfg ColWriterCfg
+	if m.Pretty {
+		wriCfg = ColWriterCfg{Pad: true, Spacer: []byte(" | ")}
+	} else {
+		wriCfg = ColWriterCfg{Pad: false, Spacer: []byte("|")}
+	}
 
 	if pR.IsType("asn") {
 
-		part := []ColCfg{
-			ColCfg{Txt: pR.Registry, Wid: 9},
-			ColCfg{Txt: pR.Cc, Wid: 3},
-			ColCfg{Txt: pR.Type, Wid: 4},
-			ColCfg{Txt: pR.Start, Wid: 10, Rt: true},
-			ColCfg{Txt: pR.Value, Wid: 10, Rt: true},
-			ColCfg{Txt: fmtDate(pR.Date), Wid: 10},
-			ColCfg{Txt: pR.Status, Wid: 10},
-		}
-
-		if err := PrintCols(out, part); err != nil {
-			return err
-		}
+		return g_colWri.WriteCols(
+			out, wriCfg, g_ccfgASN,
+			pR.Registry,
+			pR.Cc,
+			pR.Type,
+			pR.Start,
+			pR.Value,
+			fmtDate(pR.Date),
+			pR.Status,
+			pR.AsName,
+		)
 	}
 
 	// print row multiple times for each subnet
@@ -364,60 +329,19 @@ func printPretty(out io.Writer, pR *Row) error {
 			continue
 		}
 
-		part := []ColCfg{
-			ColCfg{Txt: pR.Registry, Wid: 9},
-			ColCfg{Txt: pR.Cc, Wid: 3},
-			ColCfg{Txt: pR.Type, Wid: 4},
-			ColCfg{Txt: []byte(r.String()), Wid: 23, Rt: true},
-			ColCfg{Txt: fmtDate(pR.Date), Wid: 10},
-			ColCfg{Txt: pR.Status, Wid: 10},
-		}
-
-		if err := PrintCols(out, part); err != nil {
+		err := g_colWri.WriteCols(
+			out, wriCfg, g_ccfgIP,
+			pR.Registry,
+			pR.Cc,
+			pR.Type,
+			[]byte(r.String()),
+			fmtDate(pR.Date),
+			pR.Status,
+		)
+		if err != nil {
 			return err
 		}
 	}
 
 	return nil
-}
-
-var rxAssoc *regexp.Regexp = regexp.MustCompile(`^\s*(.*)\s*\|a\s*$`)
-var rxASN *regexp.Regexp = regexp.MustCompile(`^\s*AS(\d+)\s*$`)
-
-func (m *Modes) execCmd(db *bbolt.DB, cmd string) (
-	row *Row, assoc bool, err error,
-) {
-
-	cmd = strings.TrimSpace(cmd)
-
-	if m.UpdateFromCmd(cmd) {
-		return
-	}
-
-	// fetch all associated
-	const AllAssocSuffix = ":a"
-	assoc = strings.HasSuffix(cmd, AllAssocSuffix)
-	if assoc {
-		cmd = strings.TrimSuffix(cmd, AllAssocSuffix)
-	}
-
-	// ASN
-	sASN := rxASN.FindStringSubmatch(cmd)
-	if len(sASN) > 1 {
-
-		if nASN, e2 := strconv.ParseUint(sASN[1], 10, 32); e2 != nil {
-			err = errors.WithMessage(e2, "invalid ASN")
-		} else {
-			row, err = FindByAsn(db, uint32(nASN))
-		}
-		return
-	}
-
-	// IP
-	if ip, e2 := netip.ParseAddr(cmd); e2 == nil {
-		row, err = FindByIp(db, ip)
-		return
-	}
-
-	return nil, false, EInvalidQuery
 }

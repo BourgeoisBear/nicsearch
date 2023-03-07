@@ -73,7 +73,7 @@ func DownloadRIRD(oR RIR, dirTmp, dirDst string) error {
 	}
 
 	// get reported file length
-	var nLen int64
+	var nLen int64 = -1
 	szLen := rsp.Header.Get("Content-Length")
 	if len(szLen) > 0 {
 		nLen, err = strconv.ParseInt(szLen, 10, 64)
@@ -81,12 +81,9 @@ func DownloadRIRD(oR RIR, dirTmp, dirDst string) error {
 			return errors.WithMessage(err, "parsing content length")
 		}
 	}
-	if nLen <= 0 {
-		return errors.New("Content-Length == 0")
-	}
 
 	// create tempfile for download
-	pF, err := os.CreateTemp(dirTmp, oR.Filename+"-*.txt.gz")
+	pF, err := os.CreateTemp(dirTmp, oR.Filename+"-*.gz")
 	if err != nil {
 		return err
 	}
@@ -104,7 +101,7 @@ func DownloadRIRD(oR RIR, dirTmp, dirDst string) error {
 			os.Remove(tmpname)
 		} else {
 			// move to correct path
-			err = os.Rename(tmpname, dirDst+"/"+oR.Filename+".txt.gz")
+			err = os.Rename(tmpname, dirDst+"/"+oR.Filename+".gz")
 		}
 	}()
 
@@ -116,8 +113,13 @@ func DownloadRIRD(oR RIR, dirTmp, dirDst string) error {
 			return err
 		}
 		n += ntmp
-		pct := (float32(n) / float32(nLen)) * 100.0
-		fmt.Printf("\t\x1b[2K%d/%d (%5.1f%%)\r", n, nLen, pct)
+
+		if nLen > 0 {
+			pct := (float32(n) / float32(nLen)) * 100.0
+			fmt.Printf("\t\x1b[2K%d/%d (%5.1f%%)\r", n, nLen, pct)
+		} else {
+			fmt.Printf("\t\x1b[2K%d\r", n)
+		}
 
 		if DEBUG {
 			time.Sleep(time.Millisecond * 10)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"net/netip"
 	"strconv"
 
@@ -20,8 +21,10 @@ type Row struct {
 	Status   []byte
 	RegId    []byte
 
+	// interpreted fields
 	ValueInt int
 	ASN      uint32
+	AsName   []byte
 	IpStart  netip.Addr
 	IpRange  []netip.Prefix
 }
@@ -73,6 +76,46 @@ func SortRows(rows []Row) map[string][]*Row {
 	}
 }
 
+func FindAsName(db *bbolt.DB, nASN uint32) ([]byte, error) {
+
+	// start transaction
+	tx, err := db.Begin(false)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// rows
+	bktAsName, err := GetBucket(tx, BiAsName.Key())
+	if err != nil {
+		return nil, err
+	}
+
+	var bsASN [4]byte
+	binary.BigEndian.PutUint32(bsASN[:], uint32(nASN))
+	return bktAsName.Get(bsASN[:]), nil
+}
+
+type WalkRawFunc func(k, v []byte) error
+
+func WalkRawRows(db *bbolt.DB, fnWalk WalkRawFunc) error {
+
+	// start transaction
+	tx, err := db.Begin(false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// rows
+	bktRows, err := GetBucket(tx, BiRow.Key())
+	if err != nil {
+		return err
+	}
+
+	return bktRows.ForEach(fnWalk)
+}
+
 func (r Row) FindAssociated(db *bbolt.DB) ([]Row, error) {
 
 	// start transaction
@@ -82,7 +125,7 @@ func (r Row) FindAssociated(db *bbolt.DB) ([]Row, error) {
 	}
 	defer tx.Rollback()
 
-	// fetch buckets
+	// walk keys of id2ix[r.Registry][r.RegId]
 	bktIdIx, err := GetBucket(tx, BiId2Ix.Key())
 	if err != nil {
 		return nil, err
@@ -98,6 +141,7 @@ func (r Row) FindAssociated(db *bbolt.DB) ([]Row, error) {
 		return nil, nil
 	}
 
+	// rows
 	bktRows, err := GetBucket(tx, BiRow.Key())
 	if err != nil {
 		return nil, err
