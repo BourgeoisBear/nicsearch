@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -88,7 +87,7 @@ func DownloadAll(out io.Writer, oR DownloadItem, dirTmp string) error {
 	}
 
 	// create tempfile for download
-	dstFname := path.Base(oR.DstPath)
+	dstFname := filepath.Base(oR.DstPath)
 	pF, err := os.CreateTemp(dirTmp, "*-"+dstFname)
 	if err != nil {
 		return err

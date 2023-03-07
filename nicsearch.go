@@ -93,7 +93,12 @@ func main() {
 	if E != nil {
 		return
 	}
-	dbPath = filepath.Join(dbPath, ".cache", filepath.Base(os.Args[0]))
+	szAppName := filepath.Base(os.Args[0])
+	ext := filepath.Ext(szAppName)
+	if len(ext) > 0 {
+		szAppName = strings.TrimSuffix(szAppName, ext)
+	}
+	dbPath = filepath.Join(dbPath, ".cache", szAppName)
 
 	// flags
 	var bReIndex, bDownload bool
