@@ -1,5 +1,5 @@
-github.com/BourgeoisBear/range2cidr v0.0.0-20230225140029-4e8e05fddb44 h1:pXO+NK0VFVpi/QxoLYN7uk3d57BJrLl4jHd+j0lQFog=
-github.com/BourgeoisBear/range2cidr v0.0.0-20230225140029-4e8e05fddb44/go.mod h1:eXozVSISdu8mmeZQwQaiO62GIyNPi635o7aaJl1Hrs8=
+github.com/BourgeoisBear/range2cidr v0.0.1 h1:UshwaluT4kGSi1py0kBB/lKwp4P+xGEcAkbRtOngC7I=
+github.com/BourgeoisBear/range2cidr v0.0.1/go.mod h1:eXozVSISdu8mmeZQwQaiO62GIyNPi635o7aaJl1Hrs8=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/mattn/go-isatty v0.0.17 h1:BTarxUcIeDqL27Mc+vyvdWYSL28zpIhv3RoTdsLMPng=
 github.com/mattn/go-isatty v0.0.17/go.mod h1:kYGgaQfpe5nmfYZH+SKPsOc2e4SrIfOl2e/yFXSvRLM=
