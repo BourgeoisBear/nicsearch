@@ -80,7 +80,7 @@ func main() {
 		}
 	}()
 
-	// TODO: test on windows
+	// TODO: pretty & colors for status messages
 
 	// default to pretty & color if TTY
 	bIsTty := false
