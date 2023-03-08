@@ -1,3 +1,5 @@
+TODO: integrate query syntax into flag.Parse()
+
 - ASN name search (API)
 
 	https://ftp.arin.net/pub/stats/ripencc/delegated-ripencc-latest
