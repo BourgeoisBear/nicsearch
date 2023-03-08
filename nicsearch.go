@@ -117,11 +117,11 @@ func main() {
 
 	// flags
 	var bReIndex, bDownload bool
-	flag.BoolVar(&bReIndex, "reindex", false, "rebuild RIR database index")
-	flag.BoolVar(&bDownload, "download", false, "download RIR databases")
+	flag.BoolVar(&bReIndex, "reindex", false, "force rebuild of RIR database index")
+	flag.BoolVar(&bDownload, "download", false, "force download of RIR databases")
 	flag.BoolVar(&mode.Color, "color", bIsTty, "force color output on/off")
 	flag.BoolVar(&mode.Pretty, "pretty", bIsTty, "force pretty print on/off")
-	flag.StringVar(&dbPath, "dbpath", dbPath, "path to RIR data and index")
+	flag.StringVar(&dbPath, "dbpath", dbPath, "override path to RIR data and index")
 	flag.Parse()
 
 	// create cache dir
