@@ -52,7 +52,9 @@ func GetRIRDownloadItems(dbPath string) map[RIRKey]DownloadItem {
 }
 
 // download extended delegations list from an RIR
-func DownloadAll(out io.Writer, oR DownloadItem, dirTmp string) error {
+func (m *Modes) DownloadAll(
+	out io.Writer, oR DownloadItem, dirTmp string,
+) error {
 
 	const DEBUG = false
 
@@ -62,7 +64,10 @@ func DownloadAll(out io.Writer, oR DownloadItem, dirTmp string) error {
 		url = "http://localhost:9090/delegated-afrinic-extended-latest.txt"
 	}
 
-	fmt.Fprintln(out, "\x1b[1mDOWNLOADING:\x1b[0m", url)
+	_, err := m.AnsiMsg(os.Stderr, "DOWNLOADING", url, []uint8{1, 96})
+	if err != nil {
+		return err
+	}
 
 	// request list
 	rsp, err := http.Get(url)
@@ -77,10 +82,10 @@ func DownloadAll(out io.Writer, oR DownloadItem, dirTmp string) error {
 	}
 
 	// get reported file length
-	var nLen int64 = -1
+	var nBytesTot int64 = -1
 	szLen := rsp.Header.Get("Content-Length")
 	if len(szLen) > 0 {
-		nLen, err = strconv.ParseInt(szLen, 10, 64)
+		nBytesTot, err = strconv.ParseInt(szLen, 10, 64)
 		if err != nil {
 			return errors.WithMessage(err, "parsing content length")
 		}
@@ -111,19 +116,23 @@ func DownloadAll(out io.Writer, oR DownloadItem, dirTmp string) error {
 	}()
 
 	// save downloaded file, report progress
-	var n int64
+	var nCopied int64
 	for {
 		ntmp, err := io.CopyN(gzF, rsp.Body, 1024*64)
 		if err != nil && err != io.EOF {
 			return err
 		}
-		n += ntmp
+		nCopied += ntmp
 
-		if nLen > 0 {
-			pct := (float32(n) / float32(nLen)) * 100.0
-			fmt.Fprintf(out, "\t\x1b[2K%d/%d (%5.1f%%)\r", n, nLen, pct)
+		if nBytesTot > 0 {
+			pct := (float64(nCopied) / float64(nBytesTot)) * 100.0
+			fmt.Fprintf(
+				out,
+				"\x1b[2K(%5.1f%%) %9d/%-9d bytes\r",
+				pct, nCopied, nBytesTot,
+			)
 		} else {
-			fmt.Fprintf(out, "\t\x1b[2K%d\r", n)
+			fmt.Fprintf(out, "\x1b[2K%d bytes\r", nCopied)
 		}
 
 		if DEBUG {

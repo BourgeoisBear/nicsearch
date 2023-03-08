@@ -203,8 +203,8 @@ func (pb *BktFiller) GzRead(fname string, fnRead GzReadFunc) error {
 			pct := (float64(nBytesRead) / float64(ucLen)) * 100.0
 			fmt.Fprintf(
 				os.Stderr,
-				"\t\x1b[2K%d/%d (%5.1f%%)\r",
-				nBytesRead, ucLen, pct,
+				"\x1b[2K(%5.1f%%) %9d/%-9d bytes\r",
+				pct, nBytesRead, ucLen,
 			)
 		}
 

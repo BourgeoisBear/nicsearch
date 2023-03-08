@@ -4,10 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/mattn/go-isatty"
@@ -17,6 +17,23 @@ import (
 type Modes struct {
 	Color  bool
 	Pretty bool
+}
+
+func (m *Modes) AnsiMsg(iWri io.Writer, title, msg string, sCsi []uint8) (int, error) {
+
+	if m.Color && (len(sCsi) > 0) {
+		sCodes := make([]string, len(sCsi))
+		for ix := range sCsi {
+			sCodes[ix] = strconv.Itoa(int(sCsi[ix]))
+		}
+		title = "\x1b[" + strings.Join(sCodes, ";") + "m" + title + "\x1b[0m"
+	}
+
+	if len(msg) > 0 {
+		return iWri.Write([]byte(title + ": " + msg + "\n"))
+	}
+
+	return iWri.Write([]byte(title + "\n"))
 }
 
 func (m *Modes) UpdateFromCmd(cmd string) bool {
@@ -127,13 +144,16 @@ func main() {
 	}
 	sFiles = append(sFiles, asnFile)
 
+	fnNotFound := func(fname string) (int, error) {
+		return mode.AnsiMsg(os.Stderr, "NOT FOUND", fname, []uint8{1, 91})
+	}
 	// download delegations from each RIR & ASN list from RIPE
 	for _, item := range sFiles {
 		if bDownload || !Exists(item.DstPath) {
 			if !bDownload {
-				fmt.Fprintf(os.Stderr, "'%s' NOT FOUND: DOWNLOADING RIR DATA\n", item.DstPath)
+				fnNotFound(item.DstPath)
 			}
-			if E = DownloadAll(os.Stderr, item, dbPath); E != nil {
+			if E = mode.DownloadAll(os.Stderr, item, dbPath); E != nil {
 				return
 			}
 			bReIndex = true
@@ -143,7 +163,7 @@ func main() {
 	// force re-index if DB is not found
 	boltDbFname := filepath.Join(dbPath, "nicsearch.db")
 	if !bReIndex && !Exists(boltDbFname) {
-		fmt.Fprintf(os.Stderr, "'%s' NOT FOUND: RE-INDEXING\n", boltDbFname)
+		fnNotFound(boltDbFname)
 		bReIndex = true
 	}
 
@@ -167,10 +187,14 @@ func main() {
 			return
 		}
 
+		fnIndexing := func(fname string) (int, error) {
+			return mode.AnsiMsg(os.Stderr, "INDEXING", fname, []uint8{1, 93})
+		}
+
 		// fill from sources
 		for key := range mDlItems {
 			fname := mDlItems[key].DstPath
-			fmt.Fprintf(os.Stderr, "\x1b[1mINDEXING:\x1b[0m %s\n", fname)
+			fnIndexing(fname)
 			if E = pBkt.GzRead(fname, pBkt.scanlnDelegation); E != nil {
 				return
 			}
@@ -178,7 +202,7 @@ func main() {
 
 		// fill ASN lookup
 		fname := asnFile.DstPath
-		fmt.Fprintf(os.Stderr, "\x1b[1mINDEXING:\x1b[0m %s\n", fname)
+		fnIndexing(fname)
 		E = pBkt.GzRead(fname, pBkt.scanlnAsName)
 	}
 
@@ -214,15 +238,11 @@ func main() {
 	return
 }
 
-func (m *Modes) printErr(err error) {
-	if err == nil {
-		return
+func (m *Modes) printErr(err error) (int, error) {
+	if err != nil {
+		return m.AnsiMsg(os.Stderr, "error", err.Error(), []uint8{1, 91})
 	}
-	if m.Color {
-		fmt.Fprintln(os.Stderr, "\x1b[91;1m"+"error"+"\x1b[0m: "+err.Error())
-	} else {
-		fmt.Fprintln(os.Stderr, "error: "+err.Error())
-	}
+	return 0, nil
 }
 
 func (m *Modes) printRowsSorted(db *bbolt.DB, sRows []Row) error {
