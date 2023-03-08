@@ -1,5 +1,5 @@
 # nicsearch
-Offline lookup (by IP/ASN) of other IPs/ASNs owned by the same organization.  It can also dump IPs/ASNs by country code and translate most ASNs to names.  Uses locally cached data, downloaded from all regional internet registries (RIRs).  This prevents throttlings and timeouts on high-volume lookups of IPs/ASNs.
+Offline lookup (by IP/ASN) of other IPs/ASNs owned by the same organization.  It can also dump IPs/ASNs by country code and map most ASNs to their names.  Uses locally cached data, downloaded from all regional internet registries (RIRs).  This prevents throttlings and timeouts on high-volume lookups of IPs/ASNs.
 
 ## Installation
 
