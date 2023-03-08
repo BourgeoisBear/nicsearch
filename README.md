@@ -19,17 +19,17 @@ Usage of nicsearch:
 
 USAGE: nicsearch [OPTION]... [QUERY]...
 
-OPTIONS
+OPTION
   -color
-    force color output on/off (default true)
+    force color output on/off (-color=t vs -color=f)
   -dbpath string
-    path to RIR data and index (default "/home/jstewart/.cache/nicsearch")
+    override path to RIR data and index
   -download
-    download RIR databases
+    force download of RIR databases
   -pretty
-    force pretty print on/off (default true)
+    force pretty print on/off (-pretty=t vs -pretty=f)
   -reindex
-    rebuild RIR database index
+    foce rebuild of RIR database index
         
 QUERY
   AS[0-9]+
