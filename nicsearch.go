@@ -97,8 +97,6 @@ func main() {
 		}
 	}()
 
-	// TODO: pretty & colors for status messages
-
 	// default to pretty & color if TTY
 	bIsTty := false
 	if isatty.IsTerminal(os.Stdout.Fd()) {
