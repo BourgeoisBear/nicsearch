@@ -1,5 +1,5 @@
 # nicsearch
-Offline lookup (by IP/ASN) of other IPs/ASNs owned by the same organization.  Can also dump IPs/ASNs by country code.  Uses locally cached data downloaded from all regional internet registries (RIRs).
+Offline lookup (by IP/ASN) of other IPs/ASNs owned by the same organization.  It can also dump IPs/ASNs by country code and translate most ASNs to names.  Uses locally cached data, downloaded from all regional internet registries (RIRs).  This prevents throttlings and timeouts on high-volume lookups of IPs/ASNs.
 
 ## Installation
 
@@ -12,7 +12,7 @@ go install github.com/BourgeoisBear/nicsearch@latest
 
 ## Usage
 
-If no `[QUERY]` items are supplied to the command line, nicsearch opens in interactive mode where the user can supply individual queries&mdash;each followed by the `<Enter>` key.  RIR data will be automatically downloaded and indexed on first run.  It caches RIR data in `$HOME/.cache/nicsearch` as gzipped text files.
+If no `[QUERY]` items are supplied to the command line, nicsearch opens in interactive mode.  In this mode, the user can supply individual queries, each followed by the `<Enter>` key.  RIR data is automatically downloaded and indexed on first invocation.  By default, `nicsearch` caches RIR data in `$HOME/.cache/nicsearch` as gzipped text files, but this location can be overridden with the `-dbpath` flag.
 
 ```
 Usage of nicsearch:
