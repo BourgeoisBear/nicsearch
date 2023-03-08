@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -122,6 +123,47 @@ func main() {
 	flag.BoolVar(&mode.Color, "color", bIsTty, "force color output on/off")
 	flag.BoolVar(&mode.Pretty, "pretty", bIsTty, "force pretty print on/off")
 	flag.StringVar(&dbPath, "dbpath", dbPath, "override path to RIR data and index")
+
+	var iWri io.Writer = os.Stdout
+	flag.CommandLine.SetOutput(iWri)
+	flag.Usage = func() {
+
+		fmt.Fprint(iWri, `USAGE
+  nicsearch [OPTION]... [QUERY]...
+
+Offline lookup by IP/ASN of other IPs/ASNs owned by the same organization.
+This tool can also dump IPs/ASNs by country code, as well as map most ASNs to
+their names.  Uses locally cached data, downloaded from all regional internet
+registries (RIRs) to prevent throttlings and timeouts on high-volume lookups.
+
+OPTION
+`)
+		flag.PrintDefaults()
+
+		fmt.Fprint(iWri, `
+QUERY
+  AS[0-9]+
+    query by autonomous system number (ASN)
+    example: AS123456
+
+    add the suffix ,a to return all IPs and ASNs associated with the same organization
+    example: AS123456,a
+
+  172.104.6.84
+  2620:118:7000::/44
+    query by IP (v4 or v6) address
+    example: 172.104.6.84
+
+    add the suffix ,a to return all IPs and ASNs associated with the same organization
+    example: 172.104.6.84,a
+
+  CC[A-Z]{2}
+    query by country code.  returns all IPs & ASNs for the given country.
+    example: CCUS`)
+
+		fmt.Fprint(iWri, "\n")
+	}
+
 	flag.Parse()
 
 	// create cache dir

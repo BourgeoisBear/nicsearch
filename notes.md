@@ -1,4 +1,4 @@
-TODO: integrate query syntax into flag.Parse()
+TODO: lookup by ASN name
 
 - ASN name search (API)
 
