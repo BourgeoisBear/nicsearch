@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
@@ -11,14 +10,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/chzyer/readline"
 	"github.com/mattn/go-isatty"
 	"go.etcd.io/bbolt"
 )
-
-type Modes struct {
-	Color  bool
-	Pretty bool
-}
 
 func (m *Modes) AnsiMsg(iWri io.Writer, title, msg string, sCsi []uint8) (int, error) {
 
@@ -142,29 +137,45 @@ OPTION
 
 		fmt.Fprint(iWri, `
 QUERY
-  AS[0-9]+
-    query by autonomous system number (ASN)
-    example: AS123456
+  as ASN [+]
+    query by autonomous system number (ASN).
+    example: as 14061
 
-    add the suffix ,a to return all IPs and ASNs associated with the same organization
-    example: AS123456,a
+    add the suffix '+' to return all IPs and ASNs associated
+    by 'reg-id' with the same organization.
+    example: as 14061 +
 
-  172.104.6.84
-  2620:118:7000::/44
-    query by IP (v4 or v6) address
-    example: 172.104.6.84
+  ip IPADDR [+]
+    query by IP (v4 or v6) address.
+    example: ip 172.104.6.84
 
-    add the suffix ,a to return all IPs and ASNs associated with the same organization
-    example: 172.104.6.84,a
+    add the suffix '+' to return all IPs and ASNs associated
+    by 'reg-id' with the same organization.
+    example: ip 172.104.6.84 +
 
-  CC[A-Z]{2}
+  cc COUNTRY_CODE
     query by country code.  returns all IPs & ASNs for the given country.
-    example: CCUS`)
+    example: cc US
+
+  na REGEX [+]
+    query by ASN name.  returns all ASNs with names matching the given REGEX.
+    see https://pkg.go.dev/regexp/syntax for syntax rules.
+    example: na microsoft
+
+    add the suffix '+' to return all IPs and ASNs associated
+    by 'reg-id' with the same organization(s) of all matching ASNs.
+    example: na microsoft +`)
 
 		fmt.Fprint(iWri, "\n")
 	}
 
 	flag.Parse()
+
+	// immediate exit on user-specified reindex/download without arg queries
+	bExitOnCompletion := false
+	if (bReIndex || bDownload) && (len(flag.Args()) == 0) {
+		bExitOnCompletion = true
+	}
 
 	// create cache dir
 	if E = os.MkdirAll(dbPath, 0775); E != nil {
@@ -244,6 +255,10 @@ QUERY
 		fname := asnFile.DstPath
 		fnIndexing(fname)
 		E = pBkt.GzRead(fname, pBkt.scanlnAsName)
+
+		if bExitOnCompletion {
+			return
+		}
 	}
 
 	// command REPL
@@ -251,22 +266,29 @@ QUERY
 	if len(sCmds) == 0 {
 
 		// stdin command mode
-		pSc := bufio.NewScanner(os.Stdin)
-		for pSc.Scan() {
-			if err := mode.doREPL(db, pSc.Text()); err != nil {
-				mode.printErr(err)
-			}
-		}
-		// check for scanner errs
-		if E = pSc.Err(); E != nil {
+		rl, e2 := readline.New("> ")
+		if e2 != nil {
+			E = e2
 			return
+		}
+		defer rl.Close()
+
+		for {
+			line, e2 := rl.Readline()
+			if e2 != nil {
+				E = e2
+				return
+			}
+
+			if e2 := mode.doREPL(db, line); e2 != nil {
+				mode.printErr(e2)
+			}
 		}
 
 	} else {
 
 		// args command mode
 		for ix := range sCmds {
-
 			// abort on first error in args mode
 			if err := mode.doREPL(db, sCmds[ix]); err != nil {
 				E = err
@@ -291,14 +313,19 @@ func (m *Modes) printRowsSorted(db *bbolt.DB, sRows []Row) error {
 		return nil
 	}
 
-	keys := []string{"ipv4", "ipv6", "asn"}
+	keys := []TypeKey{TkIP4, TkIP6, TkASN}
 	mSorted := SortRows(sRows)
 
 	// lookup asnames
-	sASN := mSorted["asn"]
+	sASN := mSorted[TkASN]
 	var err error
 	for ix := range sASN {
-		sASN[ix].AsName, err = FindAsName(db, sASN[ix].ASN)
+
+		if len(sASN[ix].AsName) > 0 {
+			continue
+		}
+
+		sASN[ix].AsName, err = AsnToName(db, sASN[ix].ASN)
 		if err != nil {
 			return err
 		}
@@ -336,52 +363,95 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
 		return err
 	}
 
-	var row *Row
-	var assoc bool
+	fnPrintResult := func(row *Row, bAssoc bool) error {
+		if !bAssoc {
+			return m.printRowsSorted(db, []Row{*row})
+		}
+		sRows, err := FindAssociated(db, row.Registry, row.RegId)
+		if err != nil {
+			return err
+		}
+		return m.printRowsSorted(db, sRows)
+	}
+
 	switch v := iCmd.(type) {
+	case CmdAsName:
+		sRows, err := NameRegexToASNs(db, v.Name)
+		if err != nil {
+			return err
+		}
+		if len(sRows) == 0 {
+			return ENotFound
+		}
+		if v.Assoc {
+			// get unique reg-id keypairs
+			byRegId, sKeys := UniqueRegIds(sRows)
+
+			// collect associateds
+			sRows = nil
+			for _, k := range sKeys {
+				pr := byRegId[k]
+				sTmp, err := FindAssociated(db, pr.Registry, pr.RegId)
+				if err != nil {
+					return err
+				}
+				sRows = append(sRows, sTmp...)
+			}
+		}
+
+		// print collection
+		return m.printRowsSorted(db, sRows)
+
 	case CmdIP:
-		assoc = v.Assoc
-		row, err = FindByIp(db, v.IP)
+		if row, err := IpToRow(db, v.IP); err != nil {
+			return err
+		} else {
+			return fnPrintResult(&row, v.Assoc)
+		}
+
 	case CmdASN:
-		assoc = v.Assoc
-		row, err = FindByAsn(db, v.ASN)
+		if row, err := AsnToRow(db, v.ASN); err != nil {
+			return err
+		} else {
+			return fnPrintResult(&row, v.Assoc)
+		}
+
 	case CmdCC:
-		bsCC := []byte("|" + v.CC + "|")
-		return WalkRawRows(db, func(k, v []byte) error {
-			if !bytes.Contains(v, bsCC) {
+		bsCC := []byte("|" + strings.ToUpper(v.CC) + "|")
+		nFound := 0
+		err := WalkRawRows(db, func(_, bsData []byte) error {
+			if !bytes.Contains(bsData, bsCC) {
 				return nil
 			}
-			if row, e2 := ParseRow(v, true); e2 != nil {
+			if row, e2 := ParseRow(bsData); e2 != nil {
 				return e2
 			} else {
+				nFound += 1
 				return m.printRow(os.Stdout, &row)
 			}
 		})
-	}
-
-	if row == nil {
-		return nil
-	}
-	sRows := []Row{*row}
-	if assoc {
-		if sRows, err = row.FindAssociated(db); err != nil {
+		if err != nil {
 			return err
 		}
+		if nFound == 0 {
+			return ENotFound
+		}
 	}
-	return m.printRowsSorted(db, sRows)
-}
 
-func fmtDate(in []byte) []byte {
-	if len(in) < 8 {
-		return in
-	}
-	return bytes.Join([][]byte{in[:4], in[4:6], in[6:]}, []byte{'-'})
+	return nil
 }
 
 func (m *Modes) printRow(out io.Writer, pR *Row) error {
 
 	if pR == nil {
 		return nil
+	}
+
+	fmtDate := func(in []byte) []byte {
+		if !m.Pretty || (len(in) < 8) {
+			return in
+		}
+		return bytes.Join([][]byte{in[:4], in[4:6], in[6:]}, []byte{'-'})
 	}
 
 	var wriCfg ColWriterCfg
@@ -391,15 +461,24 @@ func (m *Modes) printRow(out io.Writer, pR *Row) error {
 		wriCfg = ColWriterCfg{Pad: false, Spacer: []byte("|")}
 	}
 
-	if pR.IsType("asn") {
+	if pR.IsType(TkASN) {
+
+		szAsnFirst := strconv.FormatInt(int64(pR.ASN), 10)
+		szAsnLast := ""
+		if pR.ValueInt > 1 {
+			szAsnLast = strconv.FormatInt(
+				int64(pR.ASN)+int64(pR.ValueInt)-1,
+				10,
+			)
+		}
 
 		return g_colWri.WriteCols(
 			out, wriCfg, g_ccfgASN,
 			pR.Registry,
 			pR.Cc,
 			pR.Type,
-			pR.Start,
-			pR.Value,
+			[]byte(szAsnFirst),
+			[]byte(szAsnLast),
 			fmtDate(pR.Date),
 			pR.Status,
 			pR.AsName,

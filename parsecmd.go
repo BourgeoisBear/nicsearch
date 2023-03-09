@@ -4,7 +4,6 @@ import (
 	"net/netip"
 	"regexp"
 	"strconv"
-	"strings"
 
 	"github.com/pkg/errors"
 )
@@ -23,41 +22,82 @@ type CmdCC struct {
 	CC string
 }
 
-var g_rxASN, g_rxCC *regexp.Regexp
+type CmdAsName struct {
+	Name  string
+	Assoc bool
+}
 
-func init() {
-	g_rxASN = regexp.MustCompile(`^\s*AS(\d+)\s*$`)
-	g_rxCC = regexp.MustCompile(`^\s*CC([A-Z]{2})\s*$`)
+type Modes struct {
+	Color    bool
+	Pretty   bool
+	CmdRegex []*regexp.Regexp
 }
 
 func (m *Modes) ParseCmd(cmd string) (interface{}, error) {
 
-	// fetch all associated
-	const AllAssocSuffix = ",a"
-	assoc := strings.HasSuffix(cmd, AllAssocSuffix)
-	if assoc {
-		cmd = strings.TrimSuffix(cmd, AllAssocSuffix)
-	}
+	// build regexes on first invocation
+	if len(m.CmdRegex) == 0 {
 
-	// ASN
-	sASN := g_rxASN.FindStringSubmatch(cmd)
-	if len(sASN) > 1 {
-		if nASN, e2 := strconv.ParseUint(sASN[1], 10, 32); e2 != nil {
-			return nil, errors.WithMessage(e2, "invalid ASN")
-		} else {
-			return CmdASN{ASN: uint32(nASN), Assoc: assoc}, nil
+		sSyntax := []string{
+			`^\s*AS\s+(\d+)\s*(\s\+)?$`,
+			`^\s*IP\s+(.*?)\s*(\s\+)?$`,
+			`^\s*NA\s+(.*?)\s*(\s\+)?$`,
+			`^\s*CC\s+([A-Z]{2})\s*$`,
+		}
+		var err error
+		m.CmdRegex = make([]*regexp.Regexp, len(sSyntax))
+		for ix, txt := range sSyntax {
+			m.CmdRegex[ix], err = regexp.Compile(`(?i)` + txt)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	// COUNTRY CODE
-	sCC := g_rxCC.FindStringSubmatch(cmd)
-	if len(sCC) > 1 {
-		return CmdCC{CC: strings.ToUpper(sCC[1])}, nil
-	}
+	for ix, rx := range m.CmdRegex {
 
-	// IP
-	if ip, e2 := netip.ParseAddr(cmd); e2 == nil {
-		return CmdIP{IP: ip, Assoc: assoc}, nil
+		sMtch := rx.FindStringSubmatch(cmd)
+		if len(sMtch) == 0 {
+			continue
+		}
+
+		// fmt.Printf("%#v\n", sMtch)
+		// return nil, EInvalidQuery
+
+		var assoc bool
+		if len(sMtch) == 3 {
+			assoc = len(sMtch[2]) > 0
+		}
+
+		switch ix {
+
+		// ASN
+		case 0:
+			nASN, e2 := strconv.ParseUint(sMtch[1], 10, 32)
+			if e2 != nil {
+				return nil, errors.WithMessage(e2, "invalid ASN")
+			}
+			return CmdASN{ASN: uint32(nASN), Assoc: assoc}, nil
+
+		// IP
+		case 1:
+			ip, e2 := netip.ParseAddr(sMtch[1])
+			if e2 != nil {
+				return nil, errors.WithMessage(e2, "invalid IP")
+			}
+			return CmdIP{IP: ip, Assoc: assoc}, nil
+
+		// NA
+		case 2:
+			if len(sMtch[1]) == 0 {
+				return nil, errors.New("empty name search regex")
+			}
+			return CmdAsName{Name: sMtch[1], Assoc: assoc}, nil
+
+		// CC
+		case 3:
+			return CmdCC{CC: sMtch[1]}, nil
+		}
 	}
 
 	return nil, EInvalidQuery

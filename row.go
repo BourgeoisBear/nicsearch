@@ -2,13 +2,20 @@ package main
 
 import (
 	"bytes"
-	"encoding/binary"
 	"net/netip"
+	"sort"
 	"strconv"
 
 	"github.com/BourgeoisBear/range2cidr"
 	gerr "github.com/pkg/errors"
-	"go.etcd.io/bbolt"
+)
+
+type TypeKey int
+
+const (
+	TkASN TypeKey = iota
+	TkIP4
+	TkIP6
 )
 
 type Row struct {
@@ -27,20 +34,21 @@ type Row struct {
 	AsName   []byte
 	IpStart  netip.Addr
 	IpRange  []netip.Prefix
+	TypeInt  TypeKey
 }
 
-func (pR *Row) IsType(s ...string) bool {
+func (pR *Row) IsType(s ...TypeKey) bool {
 	for ix := range s {
-		if bytes.Equal(pR.Type, []byte(s[ix])) {
+		if s[ix] == pR.TypeInt {
 			return true
 		}
 	}
 	return false
 }
 
-func SortRows(rows []Row) map[string][]*Row {
+func SortRows(rows []Row) map[TypeKey][]*Row {
 
-	keys := []string{"ipv4", "ipv6", "asn"}
+	keys := []TypeKey{TkIP4, TkIP6, TkASN}
 	var counts [3]uint
 	var ret [3][]*Row
 
@@ -69,146 +77,72 @@ func SortRows(rows []Row) map[string][]*Row {
 		}
 	}
 
-	return map[string][]*Row{
-		"ipv4": ret[0],
-		"ipv6": ret[1],
-		"asn":  ret[2],
+	return map[TypeKey][]*Row{
+		TkIP4: ret[0],
+		TkIP6: ret[1],
+		TkASN: ret[2],
 	}
 }
 
-func FindAsName(db *bbolt.DB, nASN uint32) ([]byte, error) {
+func ParseRow(line []byte) (ret Row, err error) {
 
-	// start transaction
-	tx, err := db.Begin(false)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	// rows
-	bktAsName, err := GetBucket(tx, BiAsName.Key())
-	if err != nil {
-		return nil, err
+	sDst := []*[]byte{
+		&ret.Registry,
+		&ret.Cc,
+		&ret.Type,
+		&ret.Start,
+		&ret.Value,
+		&ret.Date,
+		&ret.Status,
+		&ret.RegId,
 	}
 
-	var bsASN [4]byte
-	binary.BigEndian.PutUint32(bsASN[:], uint32(nASN))
-	return bktAsName.Get(bsASN[:]), nil
-}
-
-type WalkRawFunc func(k, v []byte) error
-
-func WalkRawRows(db *bbolt.DB, fnWalk WalkRawFunc) error {
-
-	// start transaction
-	tx, err := db.Begin(false)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// rows
-	bktRows, err := GetBucket(tx, BiRow.Key())
-	if err != nil {
-		return err
-	}
-
-	return bktRows.ForEach(fnWalk)
-}
-
-func (r Row) FindAssociated(db *bbolt.DB) ([]Row, error) {
-
-	// start transaction
-	tx, err := db.Begin(false)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	// walk keys of id2ix[r.Registry][r.RegId]
-	bktIdIx, err := GetBucket(tx, BiId2Ix.Key())
-	if err != nil {
-		return nil, err
-	}
-
-	bktReg, err := GetBucket(bktIdIx, r.Registry)
-	if err != nil {
-		return nil, err
-	}
-
-	bktId := bktReg.Bucket(r.RegId)
-	if bktId == nil {
-		return nil, nil
-	}
-
-	// rows
-	bktRows, err := GetBucket(tx, BiRow.Key())
-	if err != nil {
-		return nil, err
-	}
-
-	ret := make([]Row, 0)
-	err = bktId.ForEach(func(k, v []byte) error {
-		if v := bktRows.Get(k); len(v) > 0 {
-			row, e2 := ParseRow(v, true)
-			if e2 != nil {
-				return e2
-			}
-			ret = append(ret, row)
-		}
-		return nil
-	})
-	return ret, err
-}
-
-func ParseRow(line []byte, bFillRange bool) (ret Row, err error) {
-
+	// copy fields
 	row := bytes.Split(line, []byte("|"))
-
-	// NOTE: Clone() to ensure we're not referencing
-	// something else's slice
 	for ix := range row {
+		// NOTE: Clone() to avoid cross-referencing the same slice
 		val := Clone(bytes.TrimSpace(row[ix]))
-		switch ix {
-		case 0:
-			ret.Registry = val
-		case 1:
-			ret.Cc = val
-		case 2:
-			ret.Type = val
-		case 3:
-			ret.Start = val
-		case 4:
-			ret.Value = val
-		case 5:
-			ret.Date = val
-		case 6:
-			ret.Status = val
-		case 7:
-			ret.RegId = val
+		if ix >= len(sDst) {
+			break
 		}
+		*sDst[ix] = val
+	}
+
+	// convert type to int
+	szType := string(ret.Type)
+	switch szType {
+	case "ASN":
+		ret.TypeInt = TkASN
+	case "IPV4":
+		ret.TypeInt = TkIP4
+	case "IPV6":
+		ret.TypeInt = TkIP6
+	default:
+		err = gerr.Errorf("unexpected row type '%s'", szType)
+		return
 	}
 
 	// convert value to int
-	nVal, err := strconv.Atoi(string(ret.Value))
+	ret.ValueInt, err = strconv.Atoi(string(ret.Value))
 	if err != nil {
 		err = gerr.WithMessage(err, "col 5, number expected")
 		return
 	}
-	ret.ValueInt = nVal
 
 	// convert ASN to uint32
-	if ret.IsType("asn") {
-		u64, err := strconv.ParseUint(string(ret.Start), 10, 32)
+	if ret.IsType(TkASN) {
+		var u64 uint64
+		u64, err = strconv.ParseUint(string(ret.Start), 10, 32)
 		if err != nil {
 			return ret, gerr.New("invalid ASN number")
 		}
 		ret.ASN = uint32(u64)
+		return
 	}
 
 	// early exit for non-ip records
-	is4 := ret.IsType("ipv4")
-	is6 := ret.IsType("ipv6")
+	is4 := ret.IsType(TkIP4)
+	is6 := ret.IsType(TkIP6)
 	if !is4 && !is6 {
 		return
 	}
@@ -227,14 +161,9 @@ func ParseRow(line []byte, bFillRange bool) (ret Row, err error) {
 		return
 	}
 
-	// skip/proceed with CIDR deaggregation
-	if !bFillRange {
-		return
-	}
-
 	// fill IpRange with list of network prefixes
 	if is6 {
-		ret.IpRange = []netip.Prefix{netip.PrefixFrom(ip, nVal)}
+		ret.IpRange = []netip.Prefix{netip.PrefixFrom(ip, ret.ValueInt)}
 		return
 	}
 
@@ -246,7 +175,7 @@ func ParseRow(line []byte, bFillRange bool) (ret Row, err error) {
 	}
 
 	// calculate last host addr, then convert back to netip
-	ipLast := range2cidr.Uint32ToV4(uBase + uint32(nVal) - 1)
+	ipLast := range2cidr.Uint32ToV4(uBase + uint32(ret.ValueInt) - 1)
 
 	// create network masks from range
 	ret.IpRange, e2 = range2cidr.Deaggregate(ip, ipLast)
@@ -254,6 +183,26 @@ func ParseRow(line []byte, bFillRange bool) (ret Row, err error) {
 		err = gerr.WithMessage(e2, "ip deaggregation failure")
 		return
 	}
+
+	return
+}
+
+// returns map of reg-ids to row pointers and its corresponding sorted keys
+func UniqueRegIds(sRows []Row) (byRegId map[string]*Row, sKeys []string) {
+
+	// map unique reg-ids
+	byRegId = make(map[string]*Row)
+	for ix, r := range sRows {
+		key := string(r.Registry) + string(r.RegId)
+		byRegId[key] = &sRows[ix]
+	}
+
+	// collect sKeys, sort
+	sKeys = make([]string, 0, len(byRegId))
+	for k := range byRegId {
+		sKeys = append(sKeys, k)
+	}
+	sort.Strings(sKeys)
 
 	return
 }

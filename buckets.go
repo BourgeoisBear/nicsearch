@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strconv"
 
-	"github.com/pkg/errors"
 	gerr "github.com/pkg/errors"
 	"go.etcd.io/bbolt"
 )
@@ -55,12 +54,12 @@ func Uint32ToBytes(in uint32) [4]byte {
 type BucketIx int
 
 const (
-	BiRow BucketIx = iota
-	BiAsn
-	BiV4
-	BiV6
-	BiId2Ix
-	BiAsName
+	BiRow    BucketIx = iota // map[rowIndex]rowData
+	BiAsn                    // map[uint32 ASN]rowIndex
+	BiV4                     // map[v4 address]rowIndex
+	BiV6                     // map[v6 address]rowIndex
+	BiId2Ix                  // map[registry][regId][rowIndex]interface{}
+	BiAsName                 // map[uint32 ASN]ASName
 	BiMAX
 )
 
@@ -251,7 +250,8 @@ func (pb *BktFiller) scanlnAsName(bkt []*bbolt.Bucket, bsLine []byte) error {
 	// add to kv store
 	var bsASN [4]byte
 	binary.BigEndian.PutUint32(bsASN[:], uint32(nASN))
-	return bktAsName.Put(bsASN[:], Clone(sMatch[2]))
+	bsName := bytes.ToUpper(sMatch[2])
+	return bktAsName.Put(bsASN[:], bsName)
 }
 
 func (pb *BktFiller) scanlnDelegation(bkt []*bbolt.Bucket, bsLine []byte) error {
@@ -281,22 +281,24 @@ func (pb *BktFiller) scanlnDelegation(bkt []*bbolt.Bucket, bsLine []byte) error 
 
 func insertRow(bkt []*bbolt.Bucket, bsRowIx, bsLine []byte) error {
 
+	bsLine = bytes.ToUpper(bsLine)
+
 	// only include (allocated|assigned)
-	if !bytes.Contains(bsLine, []byte("|assigned|")) &&
-		// !bytes.Contains(bsLine, []byte("|reserved|")) &&
-		!bytes.Contains(bsLine, []byte("|allocated|")) {
+	if !bytes.Contains(bsLine, []byte("|ASSIGNED|")) &&
+		// !bytes.Contains(bsLine, []byte("|RESERVED|")) &&
+		!bytes.Contains(bsLine, []byte("|ALLOCATED|")) {
 		return nil
 	}
 
 	// only include(asn, ipv4, ipv6)
-	if !bytes.Contains(bsLine, []byte("|asn|")) &&
-		!bytes.Contains(bsLine, []byte("|ipv4|")) &&
-		!bytes.Contains(bsLine, []byte("|ipv6|")) {
+	if !bytes.Contains(bsLine, []byte("|ASN|")) &&
+		!bytes.Contains(bsLine, []byte("|IPV4|")) &&
+		!bytes.Contains(bsLine, []byte("|IPV6|")) {
 		return nil
 	}
 
 	// parse into values
-	oRow, err := ParseRow(bsLine, false)
+	oRow, err := ParseRow(bsLine)
 	if err != nil {
 		return gerr.WithMessage(err, "parse row")
 	}
@@ -323,7 +325,7 @@ func insertRow(bkt []*bbolt.Bucket, bsRowIx, bsLine []byte) error {
 	}
 
 	// update asn, ipv4, ipv6 indices
-	if oRow.IsType("asn") && (oRow.ValueInt > 0) {
+	if oRow.IsType(TkASN) && (oRow.ValueInt > 0) {
 
 		// insert index for each ASN in range
 		asnLast := oRow.ASN + uint32(oRow.ValueInt)
@@ -336,7 +338,7 @@ func insertRow(bkt []*bbolt.Bucket, bsRowIx, bsLine []byte) error {
 			}
 		}
 
-	} else if oRow.IsType("ipv4") || oRow.IsType("ipv6") {
+	} else if oRow.IsType(TkIP4, TkIP6) {
 
 		if !oRow.IpStart.IsValid() {
 			return gerr.New("invalid ip")
@@ -358,75 +360,101 @@ func insertRow(bkt []*bbolt.Bucket, bsRowIx, bsLine []byte) error {
 	return nil
 }
 
-func FindByAsn(db *bbolt.DB, nASN uint32) (*Row, error) {
+type RowIndex []byte
 
-	// start transaction
+func GetRow(tx *bbolt.Tx, rowIx RowIndex) (Row, error) {
+
+	bktRows, err := GetBucket(tx, BiRow.Key())
+	if err != nil {
+		return Row{}, err
+	}
+
+	bsRow := bktRows.Get(rowIx)
+	if len(bsRow) == 0 {
+		return Row{}, ENotFound
+	}
+
+	return ParseRow(bsRow)
+}
+
+func AsnToName(db *bbolt.DB, nASN uint32) ([]byte, error) {
 	tx, err := db.Begin(false)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+	var bsASN [4]byte
+	binary.BigEndian.PutUint32(bsASN[:], uint32(nASN))
+	return AsnToNameTx(tx, bsASN[:])
+}
+
+func AsnToNameTx(tx *bbolt.Tx, asn []byte) ([]byte, error) {
+	bktAsName, err := GetBucket(tx, BiAsName.Key())
+	if err != nil {
+		return nil, err
+	}
+	bsName := bktAsName.Get(asn)
+	if len(bsName) > 0 {
+		return Clone(bsName), nil
+	}
+	return nil, ENotFound
+}
+
+func AsnToRow(db *bbolt.DB, nASN uint32) (Row, error) {
+	tx, err := db.Begin(false)
+	if err != nil {
+		return Row{}, err
+	}
+	defer tx.Rollback()
+	bsASN := Uint32ToBytes(nASN)
+	return AsnToRowTx(tx, bsASN[:])
+}
+
+func AsnToRowTx(tx *bbolt.Tx, bsASN []byte) (Row, error) {
 
 	// ASN index bucket
 	bktAsn, err := GetBucket(tx, BiAsn.Key())
 	if err != nil {
-		return nil, err
+		return Row{}, err
 	}
 
 	// lookup row index
-	bsASN := Uint32ToBytes(nASN)
-	rowIx := bktAsn.Get(bsASN[:])
+	rowIx := bktAsn.Get(bsASN)
 	if rowIx == nil {
-		return nil, ENotFound
-	}
-
-	// row data bucket
-	bktRows, err := GetBucket(tx, BiRow.Key())
-	if err != nil {
-		return nil, err
+		return Row{}, ENotFound
 	}
 
 	// get row data from row index
-	bsRow := bktRows.Get(rowIx)
-	if len(bsRow) == 0 {
-		return nil, errors.New("db err: missing row data to index")
-	}
-
-	// parse row data into struct
-	ret, err := ParseRow(bsRow, false)
-	return &ret, err
+	return GetRow(tx, rowIx)
 }
 
-func FindByIp(db *bbolt.DB, as netip.Addr) (*Row, error) {
-
-	if !as.IsValid() {
-		return nil, EInvalidIpAddress
-	}
-
-	// start transaction
+func IpToRow(db *bbolt.DB, ip netip.Addr) (Row, error) {
 	tx, err := db.Begin(false)
 	if err != nil {
-		return nil, err
+		return Row{}, err
 	}
 	defer tx.Rollback()
+	return IpToRowTx(tx, ip)
+}
 
-	// fetch buckets
-	bktRows, err := GetBucket(tx, BiRow.Key())
-	if err != nil {
-		return nil, err
+func IpToRowTx(tx *bbolt.Tx, ip netip.Addr) (Row, error) {
+
+	if !ip.IsValid() {
+		return Row{}, EInvalidIpAddress
 	}
 
+	// fetch buckets
 	ipix := BiV4
-	if as.Is6() {
+	if ip.Is6() {
 		ipix = BiV6
 	}
 	bktIp, err := GetBucket(tx, ipix.Key())
 	if err != nil {
-		return nil, err
+		return Row{}, err
 	}
 
 	// lookup row index by ip
-	binIpAddr := as.AsSlice()
+	binIpAddr := ip.AsSlice()
 	curBktIp := bktIp.Cursor()
 	k, v := curBktIp.Seek(binIpAddr)
 
@@ -437,7 +465,7 @@ func FindByIp(db *bbolt.DB, as netip.Addr) (*Row, error) {
 		// fetch row index of last network range
 		k, v = curBktIp.Last()
 		if k == nil {
-			return nil, ENotFound
+			return Row{}, ENotFound
 		}
 		tryReSeek = false
 	}
@@ -445,21 +473,15 @@ func FindByIp(db *bbolt.DB, as netip.Addr) (*Row, error) {
 RESEEK:
 
 	// get row data from row index
-	bsRow := bktRows.Get(v)
-	if len(bsRow) == 0 {
-		return nil, ENotFound
-	}
-
-	// parse row data into struct
-	ret, err := ParseRow(bsRow, true)
+	ret, err := GetRow(tx, v)
 	if err != nil {
-		return &ret, err
+		return ret, err
 	}
 
 	// check for range membership
 	for j := range ret.IpRange {
-		if ret.IpRange[j].Contains(as) {
-			return &ret, nil
+		if ret.IpRange[j].Contains(ip) {
+			return ret, nil
 		}
 	}
 
@@ -472,5 +494,115 @@ RESEEK:
 		}
 	}
 
-	return nil, ENotFound
+	return Row{}, ENotFound
+}
+
+func FindAssociated(
+	db *bbolt.DB, bsRegistry, bsRegId []byte,
+) ([]Row, error) {
+
+	// start transaction
+	tx, err := db.Begin(false)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// walk keys of id2ix[bsRegistry][bsRegId]
+	bktIdIx, err := GetBucket(tx, BiId2Ix.Key())
+	if err != nil {
+		return nil, err
+	}
+
+	bktReg, err := GetBucket(bktIdIx, bsRegistry)
+	if err != nil {
+		return nil, err
+	}
+
+	bktId := bktReg.Bucket(bsRegId)
+	if bktId == nil {
+		return nil, nil
+	}
+
+	// rows
+	ret := make([]Row, 0)
+	err = bktId.ForEach(func(bsRowIx, _ []byte) error {
+		row, e2 := GetRow(tx, bsRowIx)
+		if e2 == nil {
+			ret = append(ret, row)
+		}
+		return e2
+	})
+	return ret, err
+}
+
+func NameRegexToASNs(db *bbolt.DB, rxName string) ([]Row, error) {
+
+	rx, err := regexp.Compile(`(?i)` + rxName)
+	if err != nil {
+		return nil, err
+	}
+
+	// start transaction
+	tx, err := db.Begin(false)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// ASN name bucket
+	bktAsName, err := GetBucket(tx, BiAsName.Key())
+	if err != nil {
+		return nil, err
+	}
+
+	// regex match name on all buckets
+	sAsn := make([]Row, 0, 100)
+	err = bktAsName.ForEach(func(bsASN, bsAsName []byte) error {
+
+		// regex match AS Name
+		if !rx.Match(bsAsName) {
+			return nil
+		}
+
+		// get data row for ASN
+		row, err := AsnToRowTx(tx, bsASN)
+		if err != nil {
+			if err == ENotFound {
+				return nil
+			} else {
+				return err
+			}
+		}
+
+		// only return first row for ranges
+		nASN := binary.BigEndian.Uint32(bsASN)
+		if row.ASN == nASN {
+			row.AsName = Clone(bsAsName)
+			sAsn = append(sAsn, row)
+		}
+		return nil
+	})
+
+	return sAsn, err
+}
+
+type WalkRawFunc func(rowIx, rowData []byte) error
+
+func WalkRawRows(db *bbolt.DB, fnWalk WalkRawFunc) error {
+
+	// start transaction
+	tx, err := db.Begin(false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// rows
+	bktRows, err := GetBucket(tx, BiRow.Key())
+	if err != nil {
+		return err
+	}
+
+	return bktRows.ForEach(fnWalk)
 }

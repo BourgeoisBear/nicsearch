@@ -1,4 +1,5 @@
-TODO: lookup by ASN name
+// TODO: header line in pretty mode
+// TODO: sort by ip rather than registry in pretty mode
 
 - ASN name search (API)
 
