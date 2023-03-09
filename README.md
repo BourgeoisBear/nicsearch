@@ -12,7 +12,17 @@ go install github.com/BourgeoisBear/nicsearch@latest
 
 ## Usage
 
-If no `[QUERY]` items are supplied to the command line, nicsearch opens in interactive mode.  In this mode, the user can supply individual queries, each followed by the `<Enter>` key.  RIR data is automatically downloaded and indexed on first invocation.  By default, `nicsearch` caches RIR data in `$HOME/.cache/nicsearch` as gzipped text files, but this location can be overridden with the `-dbpath` flag.
+Can be used in shell pipelines by providing `[QUERY]` items as arguments:
+```
+nicsearch 'ip 172.104.6.84 +' | grep 'ASN'
+```
+
+Or, invoke without `[QUERY]` items for interactive mode:
+```
+nicsearch
+```
+
+In this mode, the user can supply individual queries inside a REPL environment.  RIR data is automatically downloaded and indexed on first invocation.  By default, `nicsearch` caches RIR data in `$HOME/.cache/nicsearch` as gzipped text files, but this location can be overridden with the `-dbpath` flag.
 
 ```
 nicsearch [OPTION]... [QUERY]...
