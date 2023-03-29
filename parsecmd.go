@@ -27,6 +27,8 @@ type CmdAsName struct {
 	Assoc bool
 }
 
+type CmdAll struct{}
+
 type Modes struct {
 	Color    bool
 	Pretty   bool
@@ -43,6 +45,7 @@ func (m *Modes) ParseCmd(cmd string) (interface{}, error) {
 			`^\s*IP\s+(.*?)\s*(\s\+)?$`,
 			`^\s*NA\s+(.*?)\s*(\s\+)?$`,
 			`^\s*CC\s+([A-Z]{2})\s*$`,
+			`^\s*ALL*$`,
 		}
 		var err error
 		m.CmdRegex = make([]*regexp.Regexp, len(sSyntax))
@@ -97,6 +100,10 @@ func (m *Modes) ParseCmd(cmd string) (interface{}, error) {
 		// CC
 		case 3:
 			return CmdCC{CC: sMtch[1]}, nil
+
+		// ALL
+		case 4:
+			return CmdAll{}, nil
 		}
 	}
 

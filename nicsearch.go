@@ -164,7 +164,10 @@ QUERY
 
     add the suffix '+' to return all IPs and ASNs associated
     by 'reg-id' with the same organization(s) of all matching ASNs.
-    example: na microsoft +`)
+    example: na microsoft +
+
+  all
+    dump all records`)
 
 		fmt.Fprint(iWri, "\n")
 	}
@@ -436,6 +439,15 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
 		if nFound == 0 {
 			return ENotFound
 		}
+
+	case CmdAll:
+		return WalkRawRows(db, func(_, bsData []byte) error {
+			if row, e2 := ParseRow(bsData); e2 != nil {
+				return e2
+			} else {
+				return m.printRow(os.Stdout, &row)
+			}
+		})
 	}
 
 	return nil
