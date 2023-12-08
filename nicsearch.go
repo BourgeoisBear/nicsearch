@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/chzyer/readline"
 	"github.com/mattn/go-isatty"
@@ -30,18 +31,6 @@ func (m *Modes) AnsiMsg(iWri io.Writer, title, msg string, sCsi []uint8) (int, e
 	}
 
 	return iWri.Write([]byte(title + "\n"))
-}
-
-func (m *Modes) UpdateFromCmd(cmd string) bool {
-	switch cmd {
-	case "pretty":
-		m.Pretty = true
-	case "nopretty":
-		m.Pretty = false
-	default:
-		return false
-	}
-	return true
 }
 
 var g_colWri ColWriter
@@ -284,17 +273,27 @@ QUERY
 				return
 			}
 
-			if e2 := mode.doREPL(db, line); e2 != nil {
+			runeLen := utf8.RuneCountInString(line)
+			if e2 := mode.doREPL(db, line, runeLen); e2 != nil {
 				mode.printErr(e2)
 			}
 		}
 
 	} else {
 
+		// get char length of longest query
+		runeLen := 0
+		for ix := range sCmds {
+			n := utf8.RuneCountInString(sCmds[ix])
+			if n > runeLen {
+				runeLen = n
+			}
+		}
+
 		// args command mode
 		for ix := range sCmds {
 			// abort on first error in args mode
-			if err := mode.doREPL(db, sCmds[ix]); err != nil {
+			if err := mode.doREPL(db, sCmds[ix], runeLen); err != nil {
 				E = err
 				return
 			}
@@ -311,7 +310,7 @@ func (m *Modes) printErr(err error) (int, error) {
 	return 0, nil
 }
 
-func (m *Modes) printRowsSorted(db *bbolt.DB, sRows []Row, cmd string) error {
+func (m *Modes) printRowsSorted(db *bbolt.DB, sRows []Row, cmd string, maxCmdLen int) error {
 
 	if len(sRows) == 0 {
 		return nil
@@ -346,7 +345,7 @@ func (m *Modes) printRowsSorted(db *bbolt.DB, sRows []Row, cmd string) error {
 
 		// print rows
 		for _, pRow := range spr {
-			if err := m.printRow(os.Stdout, pRow, cmd); err != nil {
+			if err := m.printRow(os.Stdout, pRow, cmd, maxCmdLen); err != nil {
 				return err
 			}
 		}
@@ -355,13 +354,9 @@ func (m *Modes) printRowsSorted(db *bbolt.DB, sRows []Row, cmd string) error {
 	return nil
 }
 
-func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
+func (m *Modes) doREPL(db *bbolt.DB, cmd string, maxCmdLen int) error {
 
 	cmd = strings.TrimSpace(cmd)
-	if m.UpdateFromCmd(cmd) {
-		return nil
-	}
-
 	iCmd, err := m.ParseCmd(cmd)
 	if err != nil {
 		return err
@@ -369,13 +364,13 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
 
 	fnPrintResult := func(row *Row, bAssoc bool) error {
 		if !bAssoc {
-			return m.printRowsSorted(db, []Row{*row}, cmd)
+			return m.printRowsSorted(db, []Row{*row}, cmd, maxCmdLen)
 		}
 		sRows, err := FindAssociated(db, row.Registry, row.RegId)
 		if err != nil {
 			return err
 		}
-		return m.printRowsSorted(db, sRows, cmd)
+		return m.printRowsSorted(db, sRows, cmd, maxCmdLen)
 	}
 
 	switch v := iCmd.(type) {
@@ -404,7 +399,7 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
 		}
 
 		// print collection
-		return m.printRowsSorted(db, sRows, cmd)
+		return m.printRowsSorted(db, sRows, cmd, maxCmdLen)
 
 	case CmdIP:
 		if row, err := IpToRow(db, v.IP); err != nil {
@@ -431,7 +426,7 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
 				return e2
 			} else {
 				nFound += 1
-				return m.printRow(os.Stdout, &row, cmd)
+				return m.printRow(os.Stdout, &row, cmd, maxCmdLen)
 			}
 		})
 		if err != nil {
@@ -446,7 +441,7 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
 			if row, e2 := ParseRow(bsData); e2 != nil {
 				return e2
 			} else {
-				return m.printRow(os.Stdout, &row, cmd)
+				return m.printRow(os.Stdout, &row, cmd, maxCmdLen)
 			}
 		})
 	}
@@ -454,7 +449,7 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
 	return nil
 }
 
-func (m *Modes) printRow(out io.Writer, pR *Row, cmd string) error {
+func (m *Modes) printRow(out io.Writer, pR *Row, cmd string, maxCmdLen int) error {
 
 	if pR == nil {
 		return nil
@@ -476,7 +471,7 @@ func (m *Modes) printRow(out io.Writer, pR *Row, cmd string) error {
 
 	fnPrependQuery := func(cfgs []ColCfg, txts ...[]byte) ([]ColCfg, [][]byte) {
 		if m.PrependQuery {
-			return append([]ColCfg{{Wid: len(cmd), Rt: false}}, cfgs...),
+			return append([]ColCfg{{Wid: maxCmdLen, Rt: false}}, cfgs...),
 				append([][]byte{[]byte(cmd)}, txts...)
 		} else {
 			return cfgs, txts
