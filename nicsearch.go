@@ -117,6 +117,7 @@ func main() {
 	flag.BoolVar(&bDownload, "download", false, "force download of RIR databases")
 	flag.BoolVar(&mode.Color, "color", bIsTty, "force color output on/off")
 	flag.BoolVar(&mode.Pretty, "pretty", bIsTty, "force pretty print on/off")
+	flag.BoolVar(&mode.PrependQuery, "prependQuery", false, "prepend query to corresponding result row")
 	flag.StringVar(&dbPath, "dbpath", dbPath, "override path to RIR data and index")
 
 	var iWri io.Writer = os.Stdout
@@ -310,7 +311,7 @@ func (m *Modes) printErr(err error) (int, error) {
 	return 0, nil
 }
 
-func (m *Modes) printRowsSorted(db *bbolt.DB, sRows []Row) error {
+func (m *Modes) printRowsSorted(db *bbolt.DB, sRows []Row, cmd string) error {
 
 	if len(sRows) == 0 {
 		return nil
@@ -345,7 +346,7 @@ func (m *Modes) printRowsSorted(db *bbolt.DB, sRows []Row) error {
 
 		// print rows
 		for _, pRow := range spr {
-			if err := m.printRow(os.Stdout, pRow); err != nil {
+			if err := m.printRow(os.Stdout, pRow, cmd); err != nil {
 				return err
 			}
 		}
@@ -368,13 +369,13 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
 
 	fnPrintResult := func(row *Row, bAssoc bool) error {
 		if !bAssoc {
-			return m.printRowsSorted(db, []Row{*row})
+			return m.printRowsSorted(db, []Row{*row}, cmd)
 		}
 		sRows, err := FindAssociated(db, row.Registry, row.RegId)
 		if err != nil {
 			return err
 		}
-		return m.printRowsSorted(db, sRows)
+		return m.printRowsSorted(db, sRows, cmd)
 	}
 
 	switch v := iCmd.(type) {
@@ -403,7 +404,7 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
 		}
 
 		// print collection
-		return m.printRowsSorted(db, sRows)
+		return m.printRowsSorted(db, sRows, cmd)
 
 	case CmdIP:
 		if row, err := IpToRow(db, v.IP); err != nil {
@@ -430,7 +431,7 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
 				return e2
 			} else {
 				nFound += 1
-				return m.printRow(os.Stdout, &row)
+				return m.printRow(os.Stdout, &row, cmd)
 			}
 		})
 		if err != nil {
@@ -445,7 +446,7 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
 			if row, e2 := ParseRow(bsData); e2 != nil {
 				return e2
 			} else {
-				return m.printRow(os.Stdout, &row)
+				return m.printRow(os.Stdout, &row, cmd)
 			}
 		})
 	}
@@ -453,7 +454,7 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string) error {
 	return nil
 }
 
-func (m *Modes) printRow(out io.Writer, pR *Row) error {
+func (m *Modes) printRow(out io.Writer, pR *Row, cmd string) error {
 
 	if pR == nil {
 		return nil
@@ -473,6 +474,15 @@ func (m *Modes) printRow(out io.Writer, pR *Row) error {
 		wriCfg = ColWriterCfg{Pad: false, Spacer: []byte("|")}
 	}
 
+	fnPrependQuery := func(cfgs []ColCfg, txts ...[]byte) ([]ColCfg, [][]byte) {
+		if m.PrependQuery {
+			return append([]ColCfg{{Wid: len(cmd), Rt: false}}, cfgs...),
+				append([][]byte{[]byte(cmd)}, txts...)
+		} else {
+			return cfgs, txts
+		}
+	}
+
 	if pR.IsType(TkASN) {
 
 		szAsnFirst := strconv.FormatInt(int64(pR.ASN), 10)
@@ -484,8 +494,8 @@ func (m *Modes) printRow(out io.Writer, pR *Row) error {
 			)
 		}
 
-		return g_colWri.WriteCols(
-			out, wriCfg, g_ccfgASN,
+		ccfg, sFields := fnPrependQuery(
+			g_ccfgASN,
 			pR.Registry,
 			pR.Cc,
 			pR.Type,
@@ -495,6 +505,8 @@ func (m *Modes) printRow(out io.Writer, pR *Row) error {
 			pR.Status,
 			pR.AsName,
 		)
+
+		return g_colWri.WriteCols(out, wriCfg, ccfg, sFields...)
 	}
 
 	// print row multiple times for each subnet
@@ -504,8 +516,8 @@ func (m *Modes) printRow(out io.Writer, pR *Row) error {
 			continue
 		}
 
-		err := g_colWri.WriteCols(
-			out, wriCfg, g_ccfgIP,
+		ccfg, sFields := fnPrependQuery(
+			g_ccfgIP,
 			pR.Registry,
 			pR.Cc,
 			pR.Type,
@@ -513,6 +525,8 @@ func (m *Modes) printRow(out io.Writer, pR *Row) error {
 			fmtDate(pR.Date),
 			pR.Status,
 		)
+
+		err := g_colWri.WriteCols(out, wriCfg, ccfg, sFields...)
 		if err != nil {
 			return err
 		}

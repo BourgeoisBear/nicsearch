@@ -30,9 +30,10 @@ type CmdAsName struct {
 type CmdAll struct{}
 
 type Modes struct {
-	Color    bool
-	Pretty   bool
-	CmdRegex []*regexp.Regexp
+	Color        bool
+	Pretty       bool
+	PrependQuery bool
+	CmdRegex     []*regexp.Regexp
 }
 
 func (m *Modes) ParseCmd(cmd string) (interface{}, error) {
