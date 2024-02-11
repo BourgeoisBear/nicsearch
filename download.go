@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/BourgeoisBear/nicsearch/rdap"
 	"github.com/pkg/errors"
 )
 
@@ -18,17 +19,6 @@ type DownloadItem struct {
 	SrcPath string
 	DstPath string
 }
-
-type RIRKey int
-
-const (
-	RkRipe RIRKey = iota
-	RkLacnic
-	RkAfrinic
-	RkApnic
-	RkArin
-	RkMAX
-)
 
 func defaultRIRItem(dbPath, host, key string) DownloadItem {
 	return DownloadItem{
@@ -41,13 +31,13 @@ func defaultRIRItem(dbPath, host, key string) DownloadItem {
 	}
 }
 
-func GetRIRDownloadItems(dbPath string) map[RIRKey]DownloadItem {
-	return map[RIRKey]DownloadItem{
-		RkRipe:    defaultRIRItem(dbPath, "ftp.ripe.net", "ripencc"),
-		RkLacnic:  defaultRIRItem(dbPath, "ftp.lacnic.net", "lacnic"),
-		RkAfrinic: defaultRIRItem(dbPath, "ftp.afrinic.net", "afrinic"),
-		RkApnic:   defaultRIRItem(dbPath, "ftp.apnic.net", "apnic"),
-		RkArin:    defaultRIRItem(dbPath, "ftp.arin.net", "arin"),
+func GetRIRDownloadItems(dbPath string) map[rdap.RIRKey]DownloadItem {
+	return map[rdap.RIRKey]DownloadItem{
+		rdap.RkRipe:    defaultRIRItem(dbPath, "ftp.ripe.net", "ripencc"),
+		rdap.RkLacnic:  defaultRIRItem(dbPath, "ftp.lacnic.net", "lacnic"),
+		rdap.RkAfrinic: defaultRIRItem(dbPath, "ftp.afrinic.net", "afrinic"),
+		rdap.RkApnic:   defaultRIRItem(dbPath, "ftp.apnic.net", "apnic"),
+		rdap.RkArin:    defaultRIRItem(dbPath, "ftp.arin.net", "arin"),
 	}
 }
 

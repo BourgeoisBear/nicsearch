@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/BourgeoisBear/nicsearch/rdap"
 	"github.com/chzyer/readline"
 	"github.com/mattn/go-isatty"
 	"go.etcd.io/bbolt"
@@ -34,7 +35,7 @@ func (m *Modes) AnsiMsg(iWri io.Writer, title, msg string, sCsi []uint8) (int, e
 }
 
 var g_colWri ColWriter
-var g_ccfgASN, g_ccfgIP []ColCfg
+var g_ccfgASN, g_ccfgIP, g_ccfgEmail []ColCfg
 
 func init() {
 
@@ -58,6 +59,12 @@ func init() {
 		ColCfg{Wid: 23, Rt: true},
 		ColCfg{Wid: 10},
 		ColCfg{Wid: 10},
+	}
+
+	g_ccfgEmail = []ColCfg{
+		ColCfg{Wid: 16},
+		ColCfg{Wid: 16},
+		ColCfg{},
 	}
 }
 
@@ -135,6 +142,15 @@ QUERY
     by 'reg-id' with the same organization.
     example: as 14061 +
 
+  email IPADDR
+    get email contacts for IPADDR
+    example: email 8.8.8.8
+
+    NOTE: this is an on-line query against the registry's
+          RDAP service.  columns are separated by '@@' instead
+          of '|' since pipe can appear inside the unquoted
+          local-part of an email address.
+
   ip IPADDR [+]
     query by IP (v4 or v6) address.
     example: ip 172.104.6.84
@@ -175,6 +191,7 @@ QUERY
 		return
 	}
 
+	// TODO: add https://ftp.arin.net/info/asn.txt
 	// build file list
 	asnFile := DownloadItem{
 		Host:    "ftp.ripe.net",
@@ -408,6 +425,28 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string, maxCmdLen int) error {
 			return fnPrintResult(&row, v.Assoc)
 		}
 
+	case CmdAbuse:
+		if row, err := IpToRow(db, v.IP); err != nil {
+			return err
+		} else {
+
+			szReg := string(row.Registry)
+			rk := rdap.RegistryNameToKey(szReg)
+			if rk == rdap.RkMAX {
+				return fmt.Errorf("'%s' is not a valid registry name", szReg)
+			}
+
+			ent, e2 := rdap.QueryRDAPByIP(rk, v.IP)
+			if e2 != nil {
+				return e2
+			}
+
+			// TODO: line endings
+			for _, ea := range ent.GetEmailAddrs() {
+				m.printEmailAddr(os.Stdout, ea, cmd, maxCmdLen)
+			}
+		}
+
 	case CmdASN:
 		if row, err := AsnToRow(db, v.ASN); err != nil {
 			return err
@@ -528,4 +567,32 @@ func (m *Modes) printRow(out io.Writer, pR *Row, cmd string, maxCmdLen int) erro
 	}
 
 	return nil
+}
+
+func (m *Modes) printEmailAddr(out io.Writer, em rdap.EntityEmail, cmd string, maxCmdLen int) error {
+
+	var wriCfg ColWriterCfg
+	if m.Pretty {
+		wriCfg = ColWriterCfg{Pad: true, Spacer: []byte(" @@ ")}
+	} else {
+		wriCfg = ColWriterCfg{Pad: false, Spacer: []byte("@@")}
+	}
+
+	fnPrependQuery := func(cfgs []ColCfg, txts ...[]byte) ([]ColCfg, [][]byte) {
+		if m.PrependQuery {
+			return append([]ColCfg{{Wid: maxCmdLen, Rt: false}}, cfgs...),
+				append([][]byte{[]byte(cmd)}, txts...)
+		} else {
+			return cfgs, txts
+		}
+	}
+
+	ccfg, sFields := fnPrependQuery(
+		g_ccfgEmail,
+		[]byte(em.Role),
+		[]byte(em.Handle),
+		[]byte(em.Addr),
+	)
+
+	return g_colWri.WriteCols(out, wriCfg, ccfg, sFields...)
 }

@@ -13,6 +13,10 @@ type CmdIP struct {
 	Assoc bool
 }
 
+type CmdAbuse struct {
+	IP netip.Addr
+}
+
 type CmdASN struct {
 	ASN   uint32
 	Assoc bool
@@ -46,7 +50,8 @@ func (m *Modes) ParseCmd(cmd string) (interface{}, error) {
 			`^\s*IP\s+(.*?)\s*(\s\+)?$`,
 			`^\s*NA\s+(.*?)\s*(\s\+)?$`,
 			`^\s*CC\s+([A-Z]{2})\s*$`,
-			`^\s*ALL*$`,
+			`^\s*ALL\s*$`,
+			`^\s*EMAIL\s+(.*?)\s*$`,
 		}
 		var err error
 		m.CmdRegex = make([]*regexp.Regexp, len(sSyntax))
@@ -105,6 +110,14 @@ func (m *Modes) ParseCmd(cmd string) (interface{}, error) {
 		// ALL
 		case 4:
 			return CmdAll{}, nil
+
+		// EMAILS
+		case 5:
+			ip, e2 := netip.ParseAddr(sMtch[1])
+			if e2 != nil {
+				return nil, errors.WithMessage(e2, "invalid IP")
+			}
+			return CmdAbuse{IP: ip}, nil
 		}
 	}
 
