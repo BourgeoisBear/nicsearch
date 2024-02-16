@@ -25,19 +25,27 @@ nicsearch
 In this mode, the user can supply individual queries inside a REPL environment.  RIR data is automatically downloaded and indexed on first invocation.  By default, `nicsearch` caches RIR data in `$HOME/.cache/nicsearch` as gzipped text files, but this location can be overridden with the `-dbpath` flag.
 
 ```
-nicsearch [OPTION]... [QUERY]...
+USAGE
+  nicsearch [OPTION]... [QUERY]...
+
+Offline lookup by IP/ASN of other IPs/ASNs owned by the same organization.
+This tool can also dump IPs/ASNs by country code, as well as map most ASNs to
+their names.  Uses locally cached data, downloaded from all regional internet
+registries (RIRs) to prevent throttlings and timeouts on high-volume lookups.
 
 OPTION
   -color
-    force color output on/off (-color=t vs -color=f)
+    	force color output on/off
   -dbpath string
-    override path to RIR data and index
+    	override path to RIR data and index (default "$HOME/.cache/nicsearch")
   -download
-    force download of RIR databases
+    	force download of RIR databases
+  -prependQuery
+    	prepend query to corresponding result row
   -pretty
-    force pretty print on/off (-pretty=t vs -pretty=f)
+    	force pretty print on/off
   -reindex
-    foce rebuild of RIR database index
+    	force rebuild of RIR database index
 
 QUERY
   as ASN [+]
@@ -47,6 +55,15 @@ QUERY
     add the suffix '+' to return all IPs and ASNs associated
     by 'reg-id' with the same organization.
     example: as 14061 +
+
+  email IPADDR
+    get email contacts for IPADDR
+    example: email 8.8.8.8
+
+    NOTE: this is an on-line query against the registry's
+          RDAP service.  columns are separated by '@@' instead
+          of '|' since pipe can appear inside the unquoted
+          local-part of an email address.
 
   ip IPADDR [+]
     query by IP (v4 or v6) address.
@@ -68,4 +85,7 @@ QUERY
     add the suffix '+' to return all IPs and ASNs associated
     by 'reg-id' with the same organization(s) of all matching ASNs.
     example: na microsoft +
+
+  all
+    dump all records
 ```
