@@ -18,7 +18,19 @@ import (
 )
 
 func (m *Modes) AnsiMsg(iWri io.Writer, title, msg string, sCsi []uint8) (int, error) {
+	return m.AnsiMsgEx(iWri, title, msg, "", sCsi)
+}
 
+func (m *Modes) AnsiMsgEx(iWri io.Writer, title, msg, query string, sCsi []uint8) (int, error) {
+
+	parts := make([]string, 0, 6)
+
+	// prepend query to error in PrependQuery mode
+	if m.PrependQuery && (len(query) > 0) {
+		parts = append(parts, query, " | ")
+	}
+
+	// build/write title
 	if m.Color && (len(sCsi) > 0) {
 		sCodes := make([]string, len(sCsi))
 		for ix := range sCsi {
@@ -26,12 +38,14 @@ func (m *Modes) AnsiMsg(iWri io.Writer, title, msg string, sCsi []uint8) (int, e
 		}
 		title = "\x1b[" + strings.Join(sCodes, ";") + "m" + title + "\x1b[0m"
 	}
+	parts = append(parts, title)
 
 	if len(msg) > 0 {
-		return iWri.Write([]byte(title + ": " + msg + "\n"))
+		parts = append(parts, ": ", msg)
 	}
+	parts = append(parts, "\n")
 
-	return iWri.Write([]byte(title + "\n"))
+	return iWri.Write([]byte(strings.Join(parts, "")))
 }
 
 var g_colWri ColWriter
@@ -84,7 +98,7 @@ func main() {
 	var mode Modes
 	defer func() {
 		if E != nil {
-			mode.printErr(E)
+			mode.printErr(E, "")
 			os.Exit(1)
 		}
 	}()
@@ -292,7 +306,7 @@ QUERY
 
 			runeLen := utf8.RuneCountInString(line)
 			if e2 := mode.doREPL(db, line, runeLen); e2 != nil {
-				mode.printErr(e2)
+				mode.printErr(e2, line)
 			}
 		}
 
@@ -309,10 +323,8 @@ QUERY
 
 		// args command mode
 		for ix := range sCmds {
-			// abort on first error in args mode
 			if err := mode.doREPL(db, sCmds[ix], runeLen); err != nil {
-				E = err
-				return
+				mode.printErr(err, sCmds[ix])
 			}
 		}
 	}
@@ -320,11 +332,11 @@ QUERY
 	return
 }
 
-func (m *Modes) printErr(err error) (int, error) {
-	if err != nil {
-		return m.AnsiMsg(os.Stderr, "error", err.Error(), []uint8{1, 91})
+func (m *Modes) printErr(err error, query string) (int, error) {
+	if err == nil {
+		return 0, nil
 	}
-	return 0, nil
+	return m.AnsiMsgEx(os.Stderr, "error", err.Error(), query, []uint8{1, 91})
 }
 
 func (m *Modes) printRowsSorted(db *bbolt.DB, sRows []Row, cmd string, maxCmdLen int) error {
