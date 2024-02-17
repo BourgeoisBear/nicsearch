@@ -1,5 +1,10 @@
 package rdap
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
 /*
    https://www.apnic.net/manage-ip/using-whois/abuse-and-spamming/reporting-abuse-and-spam/
 
@@ -60,6 +65,7 @@ type Event struct {
 	Action string `json:"eventAction"`
 	Actor  string `json:"eventActor"`
 	Date   string `json:"eventDate"`
+	Status Status `json:"status"`
 	Links  []Link
 }
 
@@ -68,6 +74,34 @@ type Event struct {
 type PublicID struct {
 	Type       string
 	Identifier string
+}
+
+type Status []string
+
+func (pv *Status) UnmarshalJSON(bs []byte) error {
+
+	*pv = make([]string, 0)
+
+	if len(bs) == 0 {
+		return nil
+	}
+
+	iRd := bytes.NewReader(bs)
+	pDec := json.NewDecoder(iRd)
+
+	for pDec.More() {
+		tok, err := pDec.Token()
+		if err != nil {
+			return err
+		}
+
+		switch v := tok.(type) {
+		case string:
+			*pv = append(*pv, v)
+		}
+	}
+
+	return nil
 }
 
 // IPNetwork represents information of an IP Network.
@@ -86,7 +120,7 @@ type IPNetwork struct {
 	Type         string
 	Country      string
 	ParentHandle string
-	Status       []string
+	Status       Status
 	Entities     []Entity
 	Remarks      []Remark
 	Links        []Link
@@ -108,7 +142,7 @@ type Autnum struct {
 	IPVersion   string `json:"ipVersion"`
 	Name        string
 	Type        string
-	Status      []string
+	Status      Status
 	Country     string
 	Entities    []Entity
 	Remarks     []Remark
@@ -133,7 +167,7 @@ type Entity struct {
 	Links        []Link
 	Events       []Event
 	AsEventActor []Event
-	Status       []string
+	Status       Status
 	Port43       string
 	Networks     []IPNetwork
 	Autnums      []Autnum

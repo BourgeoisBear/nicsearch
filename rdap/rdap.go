@@ -3,8 +3,10 @@ package rdap
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
+	"os"
 	"strings"
 )
 
@@ -66,8 +68,16 @@ func QueryRDAPByIP(key RIRKey, ip netip.Addr) (Entity, error) {
 		return sE, fmt.Errorf("%s: %s", rsp.Status, szUrl)
 	}
 
-	pDec := json.NewDecoder(rsp.Body)
-	err = pDec.Decode(&sE)
+	// read response
+	bsData, err := io.ReadAll(rsp.Body)
+	if err != nil {
+		return sE, err
+	}
+
+	err = json.Unmarshal(bsData, &sE)
+	if err != nil {
+		os.Stderr.Write(bsData)
+	}
 	return sE, err
 }
 
