@@ -35,7 +35,7 @@ type Link struct {
 	Value    string
 	Rel      string
 	Href     string
-	HrefLang []string `json:"hreflang"`
+	HrefLang OnePlusString `json:"hreflang"`
 	Title    string
 	Media    string
 	Type     string
@@ -46,7 +46,7 @@ type Link struct {
 type Notice struct {
 	Title       string
 	Type        string
-	Description []string
+	Description OnePlusString
 	Links       []Link
 }
 
@@ -55,17 +55,17 @@ type Notice struct {
 type Remark struct {
 	Title       string
 	Type        string
-	Description []string
+	Description OnePlusString
 	Links       []Link
 }
 
 // Event represents some event which has occured/may occur in the future..
 // https://tools.ietf.org/html/rfc7483#section-4.5
 type Event struct {
-	Action string `json:"eventAction"`
-	Actor  string `json:"eventActor"`
-	Date   string `json:"eventDate"`
-	Status Status `json:"status"`
+	Action string        `json:"eventAction"`
+	Actor  string        `json:"eventActor"`
+	Date   string        `json:"eventDate"`
+	Status OnePlusString `json:"status"`
 	Links  []Link
 }
 
@@ -76,9 +76,9 @@ type PublicID struct {
 	Identifier string
 }
 
-type Status []string
+type OnePlusString []string
 
-func (pv *Status) UnmarshalJSON(bs []byte) error {
+func (pv *OnePlusString) UnmarshalJSON(bs []byte) error {
 
 	*pv = make([]string, 0)
 
@@ -108,7 +108,7 @@ func (pv *Status) UnmarshalJSON(bs []byte) error {
 // IPNetwork is a topmost RDAP response object.
 type IPNetwork struct {
 	Common
-	Conformance     []string `json:"rdapConformance"`
+	Conformance     OnePlusString `json:"rdapConformance"`
 	ObjectClassName string
 	Notices         []Notice
 
@@ -120,7 +120,7 @@ type IPNetwork struct {
 	Type         string
 	Country      string
 	ParentHandle string
-	Status       Status
+	Status       OnePlusString
 	Entities     []Entity
 	Remarks      []Remark
 	Links        []Link
@@ -132,7 +132,7 @@ type IPNetwork struct {
 // Autnum is a topmost RDAP response object.
 type Autnum struct {
 	Common
-	Conformance     []string `json:"rdapConformance"`
+	Conformance     OnePlusString `json:"rdapConformance"`
 	ObjectClassName string
 	Notices         []Notice
 
@@ -142,7 +142,7 @@ type Autnum struct {
 	IPVersion   string `json:"ipVersion"`
 	Name        string
 	Type        string
-	Status      Status
+	Status      OnePlusString
 	Country     string
 	Entities    []Entity
 	Remarks     []Remark
@@ -154,20 +154,20 @@ type Autnum struct {
 // Entity is a topmost RDAP response object.
 type Entity struct {
 	Common
-	Conformance     []string `json:"rdapConformance"`
+	Conformance     OnePlusString `json:"rdapConformance"`
 	ObjectClassName string
 	Notices         []Notice
 
 	Handle       string
 	VCard        VCard `json:"vcardArray"`
-	Roles        []string
+	Roles        OnePlusString
 	PublicIDs    []PublicID `json:"publicIds"`
 	Entities     []Entity
 	Remarks      []Remark
 	Links        []Link
 	Events       []Event
 	AsEventActor []Event
-	Status       Status
+	Status       OnePlusString
 	Port43       string
 	Networks     []IPNetwork
 	Autnums      []Autnum
