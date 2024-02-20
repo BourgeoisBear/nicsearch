@@ -1,12 +1,10 @@
 package rdap
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/netip"
-	"os"
 	"strings"
 )
 
@@ -50,35 +48,25 @@ func RegistryNameToKey(regName string) RIRKey {
 	}
 }
 
-func QueryRDAPByIP(key RIRKey, ip netip.Addr) (Entity, error) {
+func QueryRDAPByIP(key RIRKey, ip netip.Addr) ([]byte, error) {
 
-	var sE Entity
 	mUrl := GetRDAPUrls()
 	szUrl := mUrl[key] + "/ip/" + ip.String()
 
 	// request list
 	rsp, err := http.Get(szUrl)
 	if err != nil {
-		return sE, err
+		return nil, err
 	}
 	defer rsp.Body.Close()
 
 	// error non non-200
 	if rsp.StatusCode != 200 {
-		return sE, fmt.Errorf("%s: %s", rsp.Status, szUrl)
+		return nil, fmt.Errorf("%s: %s", rsp.Status, szUrl)
 	}
 
 	// read response
-	bsData, err := io.ReadAll(rsp.Body)
-	if err != nil {
-		return sE, err
-	}
-
-	err = json.Unmarshal(bsData, &sE)
-	if err != nil {
-		os.Stderr.Write(bsData)
-	}
-	return sE, err
+	return io.ReadAll(rsp.Body)
 }
 
 type EntityEmail struct {

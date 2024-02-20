@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -150,41 +152,46 @@ OPTION
 QUERY
   as ASN [+]
     query by autonomous system number (ASN).
-    example: as 14061
+    example: 'as 14061'
 
     add the suffix '+' to return all IPs and ASNs associated
     by 'reg-id' with the same organization.
-    example: as 14061 +
-
-  email IPADDR
-    get email contacts for IPADDR
-    example: email 8.8.8.8
-
-    NOTE: this is an on-line query against the registry's
-          RDAP service.  columns are separated by '@@' instead
-          of '|' since pipe can appear inside the unquoted
-          local-part of an email address.
+    example: 'as 14061 +'
 
   ip IPADDR [+]
     query by IP (v4 or v6) address.
-    example: ip 172.104.6.84
+    example: 'ip 172.104.6.84'
 
     add the suffix '+' to return all IPs and ASNs associated
     by 'reg-id' with the same organization.
-    example: ip 172.104.6.84 +
+    example: 'ip 172.104.6.84 +'
 
   cc COUNTRY_CODE
     query by country code.  returns all IPs & ASNs for the given country.
-    example: cc US
+    example: 'cc US'
 
   na REGEX [+]
     query by ASN name.  returns all ASNs with names matching the given REGEX.
     see https://pkg.go.dev/regexp/syntax for syntax rules.
-    example: na microsoft
+    example: 'na microsoft'
 
     add the suffix '+' to return all IPs and ASNs associated
     by 'reg-id' with the same organization(s) of all matching ASNs.
-    example: na microsoft +
+    example: 'na microsoft +'
+
+  email IPADDR
+    get email contacts for IPADDR
+    example: 'email 8.8.8.8'
+
+    NOTE: this is an on-line query against the RIR's RDAP service.
+          columns are separated by '@@' instead of '|' since
+          pipe can appear inside the unquoted local-part of an email address.
+
+  rdap IPADDR
+    get full RDAP reply for IPADDR
+    example: 'rdap 8.8.8.8'
+
+    NOTE: this is an on-line query against the RIR's RDAP service.
 
   all
     dump all records`)
@@ -437,27 +444,48 @@ func (m *Modes) doREPL(db *bbolt.DB, cmd string, maxCmdLen int) error {
 			return fnPrintResult(&row, v.Assoc)
 		}
 
-	case CmdAbuse:
-		if row, err := IpToRow(db, v.IP); err != nil {
+	case CmdEmail:
+
+		bsJSON, err := rdapByIp(db, v.IP)
+		if err != nil {
 			return err
-		} else {
+		}
 
-			szReg := string(row.Registry)
-			rk := rdap.RegistryNameToKey(szReg)
-			if rk == rdap.RkMAX {
-				return fmt.Errorf("'%s' is not a valid registry name", szReg)
+		var ent rdap.Entity
+		err = json.Unmarshal(bsJSON, &ent)
+		if err != nil {
+			os.Stderr.Write(bsJSON)
+			return err
+		}
+
+		for _, ea := range ent.GetEmailAddrs() {
+			m.printEmailAddr(os.Stdout, ea, cmd, maxCmdLen)
+		}
+
+	case CmdRDAP:
+
+		bsJSON, err := rdapByIp(db, v.IP)
+		if err != nil {
+			return err
+		}
+
+		// unmarshal / re-marshal + indent in pretty mode
+		if m.Pretty {
+
+			mTmp := make(map[string]interface{})
+			err = json.Unmarshal(bsJSON, &mTmp)
+			if err != nil {
+				return err
 			}
 
-			ent, e2 := rdap.QueryRDAPByIP(rk, v.IP)
-			if e2 != nil {
-				return e2
-			}
-
-			// TODO: line endings
-			for _, ea := range ent.GetEmailAddrs() {
-				m.printEmailAddr(os.Stdout, ea, cmd, maxCmdLen)
+			bsJSON, err = json.MarshalIndent(mTmp, "", "\t")
+			if err != nil {
+				return err
 			}
 		}
+
+		_, err = os.Stdout.Write(bsJSON)
+		return err
 
 	case CmdASN:
 		if row, err := AsnToRow(db, v.ASN); err != nil {
@@ -607,4 +635,20 @@ func (m *Modes) printEmailAddr(out io.Writer, em rdap.EntityEmail, cmd string, m
 	)
 
 	return g_colWri.WriteCols(out, wriCfg, ccfg, sFields...)
+}
+
+func rdapByIp(db *bbolt.DB, ip netip.Addr) ([]byte, error) {
+
+	row, err := IpToRow(db, ip)
+	if err != nil {
+		return nil, err
+	}
+
+	szReg := string(row.Registry)
+	rk := rdap.RegistryNameToKey(szReg)
+	if rk == rdap.RkMAX {
+		return nil, fmt.Errorf("'%s' is not a valid registry name", szReg)
+	}
+
+	return rdap.QueryRDAPByIP(rk, ip)
 }
