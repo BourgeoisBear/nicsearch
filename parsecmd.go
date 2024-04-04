@@ -1,10 +1,14 @@
 package main
 
 import (
+	"encoding/json"
+	"io"
 	"net/netip"
 	"regexp"
 	"strconv"
+	"strings"
 
+	"github.com/BourgeoisBear/nicsearch/rdap"
 	"github.com/pkg/errors"
 )
 
@@ -14,10 +18,6 @@ type CmdIP struct {
 }
 
 type CmdEmail struct {
-	IP netip.Addr
-}
-
-type CmdRDAP struct {
 	IP netip.Addr
 }
 
@@ -35,8 +35,20 @@ type CmdAsName struct {
 	Assoc bool
 }
 
+type CmdRDAP_IP struct {
+	RIR rdap.RIRKey
+	IP  netip.Addr
+}
+
+type CmdRDAP_Org struct {
+	RIR      rdap.RIRKey
+	OrgId    string
+	NetsOnly bool
+}
+
 type CmdAll struct{}
 
+/*
 type CmdIx int
 
 const (
@@ -46,101 +58,152 @@ const (
 	CmdIxCC
 	CmdIxALL
 	CmdIxEMAIL
-	CmdIxRDAP
+	CmdIxRDAP_IP
+	CmdIxRDAP_ORG
+	CmdIxRDAP_ORG_NETS
 	CmdIxMAX
 )
+*/
+
+var g_cmdRegex []*regexp.Regexp
+
+func init() {
+
+	szRegex := []string{
+		`(AS)N?\s+(\d+)\s*(\s\+)?`,
+		`(IP)\s+(.*?)\s*(\s\+)?`,
+		`(NA)(?:ME)?\s+(.*?)\s*(\s\+)?`,
+		`(CC)\s+([A-Z]{2})\s*`,
+		`(ALL)\s*`,
+		`(EMAIL)\s+(.*?)\s*`,
+		`(RDAP\.IP)\s+(.*?)\s+(.*?)\s*`,
+		`(RDAP\.ORG)\s+(.*?)\s+(.*?)\s*`,
+		`(RDAP\.ORGNETS)\s+(.*?)\s+(.*?)\s*`,
+	}
+
+	for _, txt := range szRegex {
+		g_cmdRegex = append(
+			g_cmdRegex,
+			regexp.MustCompile(`(?i)^\s*`+txt+`$`),
+		)
+	}
+}
 
 type Modes struct {
 	Color        bool
 	Pretty       bool
 	PrependQuery bool
-	CmdRegex     map[CmdIx]*regexp.Regexp
 }
 
-func (m *Modes) ParseCmd(cmd string) (interface{}, error) {
+func (m *Modes) PrintJSON(iWri io.Writer, bsJSON []byte) error {
 
-	// build regexes on first invocation
-	if len(m.CmdRegex) == 0 {
+	// unmarshal / re-marshal + indent in pretty mode
+	if m.Pretty {
 
-		sSyntax := map[CmdIx]string{
-			CmdIxASN:   `^\s*ASN?\s+(\d+)\s*(\s\+)?$`,
-			CmdIxIP:    `^\s*IP\s+(.*?)\s*(\s\+)?$`,
-			CmdIxNAME:  `^\s*NA(?:ME)?\s+(.*?)\s*(\s\+)?$`,
-			CmdIxCC:    `^\s*CC\s+([A-Z]{2})\s*$`,
-			CmdIxALL:   `^\s*ALL\s*$`,
-			CmdIxEMAIL: `^\s*EMAIL\s+(.*?)\s*$`,
-			CmdIxRDAP:  `^\s*RDAP\s+(.*?)\s*$`,
+		mTmp := make(map[string]interface{})
+		err := json.Unmarshal(bsJSON, &mTmp)
+		if err != nil {
+			return err
 		}
-		var err error
-		m.CmdRegex = make(map[CmdIx]*regexp.Regexp, CmdIxMAX)
-		for key, txt := range sSyntax {
-			m.CmdRegex[key], err = regexp.Compile(`(?i)` + txt)
-			if err != nil {
-				return nil, err
-			}
+
+		bsJSON, err = json.MarshalIndent(mTmp, "", "\t")
+		if err != nil {
+			return err
 		}
 	}
 
-	for rxKey, rx := range m.CmdRegex {
+	_, err := iWri.Write(append(bsJSON, '\n'))
+	return err
+}
 
-		sMtch := rx.FindStringSubmatch(cmd)
-		if len(sMtch) == 0 {
+// cmd should be upper-case and without leading/trailing whitespace
+func (m *Modes) ParseCmd(cmd string) (CmdExec, error) {
+
+	// TODO: quick command reference, point out closest command on fail
+
+	for _, rx := range g_cmdRegex {
+
+		sArg := rx.FindStringSubmatch(cmd)
+		if len(sArg) < 2 {
 			continue
 		}
+		sArg = sArg[1:]
 
-		var assoc bool
-		if len(sMtch) == 3 {
-			assoc = len(sMtch[2]) > 0
-		}
+		// TODO: validate commands
+		// TODO: stress test regexes
+		bGetAssociated := strings.HasSuffix(cmd, "+")
 
-		switch rxKey {
+		switch sArg[0] {
 
 		// ASN
-		case CmdIxASN:
-			nASN, e2 := strconv.ParseUint(sMtch[1], 10, 32)
+		case "AS":
+			nASN, e2 := strconv.ParseUint(sArg[1], 10, 32)
 			if e2 != nil {
 				return nil, errors.WithMessage(e2, "invalid ASN")
 			}
-			return CmdASN{ASN: uint32(nASN), Assoc: assoc}, nil
+			return CmdASN{ASN: uint32(nASN), Assoc: bGetAssociated}, nil
 
 		// IP
-		case CmdIxIP:
-			ip, e2 := netip.ParseAddr(sMtch[1])
+		case "IP":
+			ip, e2 := netip.ParseAddr(sArg[1])
 			if e2 != nil {
 				return nil, errors.WithMessage(e2, "invalid IP")
 			}
-			return CmdIP{IP: ip, Assoc: assoc}, nil
+			return CmdIP{IP: ip, Assoc: bGetAssociated}, nil
 
 		// NA
-		case CmdIxNAME:
-			if len(sMtch[1]) == 0 {
+		case "NA":
+			if len(sArg[1]) == 0 {
 				return nil, errors.New("empty name search regex")
 			}
-			return CmdAsName{Name: sMtch[1], Assoc: assoc}, nil
+			return CmdAsName{Name: sArg[1], Assoc: bGetAssociated}, nil
 
 		// CC
-		case CmdIxCC:
-			return CmdCC{CC: sMtch[1]}, nil
+		case "CC":
+			return CmdCC{CC: sArg[1]}, nil
 
 		// ALL
-		case CmdIxALL:
+		case "ALL":
 			return CmdAll{}, nil
 
 		// EMAIL
-		case CmdIxEMAIL:
-			ip, e2 := netip.ParseAddr(sMtch[1])
+		case "EMAIL":
+			ip, e2 := netip.ParseAddr(sArg[1])
 			if e2 != nil {
 				return nil, errors.WithMessage(e2, "invalid IP")
 			}
 			return CmdEmail{IP: ip}, nil
 
 		// RDAP
-		case CmdIxRDAP:
-			ip, e2 := netip.ParseAddr(sMtch[1])
+		case "RDAP.IP":
+
+			rk, e2 := rdap.RegistryNameToKey(sArg[1])
+			if e2 != nil {
+				return nil, e2
+			}
+
+			ip, e2 := netip.ParseAddr(sArg[2])
 			if e2 != nil {
 				return nil, errors.WithMessage(e2, "invalid IP")
 			}
-			return CmdRDAP{IP: ip}, nil
+
+			return CmdRDAP_IP{RIR: rk, IP: ip}, nil
+
+		case "RDAP.ORG":
+
+			rk, e2 := rdap.RegistryNameToKey(sArg[1])
+			if e2 != nil {
+				return nil, e2
+			}
+			return CmdRDAP_Org{RIR: rk, OrgId: sArg[2]}, nil
+
+		case "RDAP.ORGNETS":
+
+			rk, e2 := rdap.RegistryNameToKey(sArg[1])
+			if e2 != nil {
+				return nil, e2
+			}
+			return CmdRDAP_Org{RIR: rk, OrgId: sArg[2], NetsOnly: true}, nil
 		}
 	}
 

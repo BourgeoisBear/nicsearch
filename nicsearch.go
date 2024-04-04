@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -48,40 +46,6 @@ func (m *Modes) AnsiMsgEx(iWri io.Writer, title, msg, query string, sCsi []uint8
 	parts = append(parts, "\n")
 
 	return iWri.Write([]byte(strings.Join(parts, "")))
-}
-
-var g_colWri ColWriter
-var g_ccfgASN, g_ccfgIP, g_ccfgEmail []ColCfg
-
-func init() {
-
-	g_colWri = ColWriter{}
-
-	g_ccfgASN = []ColCfg{
-		ColCfg{Wid: 9},
-		ColCfg{Wid: 3},
-		ColCfg{Wid: 4},
-		ColCfg{Wid: 10, Rt: true},
-		ColCfg{Wid: 10, Rt: true},
-		ColCfg{Wid: 10},
-		ColCfg{Wid: 10},
-		ColCfg{},
-	}
-
-	g_ccfgIP = []ColCfg{
-		ColCfg{Wid: 9},
-		ColCfg{Wid: 3},
-		ColCfg{Wid: 4},
-		ColCfg{Wid: 23, Rt: true},
-		ColCfg{Wid: 10},
-		ColCfg{Wid: 10},
-	}
-
-	g_ccfgEmail = []ColCfg{
-		ColCfg{Wid: 16},
-		ColCfg{Wid: 16},
-		ColCfg{},
-	}
 }
 
 func Exists(fname string) bool {
@@ -346,295 +310,22 @@ func (m *Modes) printErr(err error, query string) (int, error) {
 	return m.AnsiMsgEx(os.Stderr, "error", err.Error(), query, []uint8{1, 91})
 }
 
-func (m *Modes) printRowsSorted(db *bbolt.DB, sRows []Row, cmd string, maxCmdLen int) error {
+func (m *Modes) doREPL(db *bbolt.DB, szCmd string, maxCmdLen int) error {
 
-	if len(sRows) == 0 {
-		return nil
-	}
-
-	keys := []TypeKey{TkIP4, TkIP6, TkASN}
-	mSorted := SortRows(sRows)
-
-	// lookup asnames
-	sASN := mSorted[TkASN]
-	var err error
-	for ix := range sASN {
-
-		if len(sASN[ix].AsName) > 0 {
-			continue
-		}
-
-		sASN[ix].AsName, err = AsnToName(db, sASN[ix].ASN)
-		if err != nil {
-			return err
-		}
-	}
-
-	// walk groups
-	for _, key := range keys {
-
-		// get group rows
-		spr := mSorted[key]
-		if len(spr) == 0 {
-			continue
-		}
-
-		// print rows
-		for _, pRow := range spr {
-			if err := m.printRow(os.Stdout, pRow, cmd, maxCmdLen); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-func (m *Modes) doREPL(db *bbolt.DB, cmd string, maxCmdLen int) error {
-
-	cmd = strings.TrimSpace(cmd)
-	iCmd, err := m.ParseCmd(cmd)
+	szCmd = strings.ToUpper(strings.TrimSpace(szCmd))
+	iCmd, err := m.ParseCmd(szCmd)
 	if err != nil {
 		return err
 	}
 
-	fnPrintResult := func(row *Row, bAssoc bool) error {
-		if !bAssoc {
-			return m.printRowsSorted(db, []Row{*row}, cmd, maxCmdLen)
-		}
-		sRows, err := FindAssociated(db, row.Registry, row.RegId)
-		if err != nil {
-			return err
-		}
-		return m.printRowsSorted(db, sRows, cmd, maxCmdLen)
-	}
-
-	switch v := iCmd.(type) {
-	case CmdAsName:
-		sRows, err := NameRegexToASNs(db, v.Name)
-		if err != nil {
-			return err
-		}
-		if len(sRows) == 0 {
-			return ENotFound
-		}
-		if v.Assoc {
-			// get unique reg-id keypairs
-			byRegId, sKeys := UniqueRegIds(sRows)
-
-			// collect associateds
-			sRows = nil
-			for _, k := range sKeys {
-				pr := byRegId[k]
-				sTmp, err := FindAssociated(db, pr.Registry, pr.RegId)
-				if err != nil {
-					return err
-				}
-				sRows = append(sRows, sTmp...)
-			}
-		}
-
-		// print collection
-		return m.printRowsSorted(db, sRows, cmd, maxCmdLen)
-
-	case CmdIP:
-		if row, err := IpToRow(db, v.IP); err != nil {
-			return err
-		} else {
-			return fnPrintResult(&row, v.Assoc)
-		}
-
-	case CmdEmail:
-
-		bsJSON, err := rdapByIp(db, v.IP)
-		if err != nil {
-			return err
-		}
-
-		var ent rdap.Entity
-		err = json.Unmarshal(bsJSON, &ent)
-		if err != nil {
-			os.Stderr.Write(bsJSON)
-			return err
-		}
-
-		for _, ea := range ent.GetEmailAddrs() {
-			m.printEmailAddr(os.Stdout, ea, cmd, maxCmdLen)
-		}
-
-	case CmdRDAP:
-
-		bsJSON, err := rdapByIp(db, v.IP)
-		if err != nil {
-			return err
-		}
-
-		// unmarshal / re-marshal + indent in pretty mode
-		if m.Pretty {
-
-			mTmp := make(map[string]interface{})
-			err = json.Unmarshal(bsJSON, &mTmp)
-			if err != nil {
-				return err
-			}
-
-			bsJSON, err = json.MarshalIndent(mTmp, "", "\t")
-			if err != nil {
-				return err
-			}
-		}
-
-		_, err = os.Stdout.Write(bsJSON)
-		return err
-
-	case CmdASN:
-		if row, err := AsnToRow(db, v.ASN); err != nil {
-			return err
-		} else {
-			return fnPrintResult(&row, v.Assoc)
-		}
-
-	case CmdCC:
-		bsCC := []byte("|" + strings.ToUpper(v.CC) + "|")
-		nFound := 0
-		err := WalkRawRows(db, func(_, bsData []byte) error {
-			if !bytes.Contains(bsData, bsCC) {
-				return nil
-			}
-			if row, e2 := ParseRow(bsData); e2 != nil {
-				return e2
-			} else {
-				nFound += 1
-				return m.printRow(os.Stdout, &row, cmd, maxCmdLen)
-			}
-		})
-		if err != nil {
-			return err
-		}
-		if nFound == 0 {
-			return ENotFound
-		}
-
-	case CmdAll:
-		return WalkRawRows(db, func(_, bsData []byte) error {
-			if row, e2 := ParseRow(bsData); e2 != nil {
-				return e2
-			} else {
-				return m.printRow(os.Stdout, &row, cmd, maxCmdLen)
-			}
-		})
-	}
-
-	return nil
-}
-
-func (m *Modes) printRow(out io.Writer, pR *Row, cmd string, maxCmdLen int) error {
-
-	if pR == nil {
-		return nil
-	}
-
-	fmtDate := func(in []byte) []byte {
-		if !m.Pretty || (len(in) < 8) {
-			return in
-		}
-		return bytes.Join([][]byte{in[:4], in[4:6], in[6:]}, []byte{'-'})
-	}
-
-	var wriCfg ColWriterCfg
-	if m.Pretty {
-		wriCfg = ColWriterCfg{Pad: true, Spacer: []byte(" | ")}
-	} else {
-		wriCfg = ColWriterCfg{Pad: false, Spacer: []byte("|")}
-	}
-
-	fnPrependQuery := func(cfgs []ColCfg, txts ...[]byte) ([]ColCfg, [][]byte) {
-		if m.PrependQuery {
-			return append([]ColCfg{{Wid: maxCmdLen, Rt: false}}, cfgs...),
-				append([][]byte{[]byte(cmd)}, txts...)
-		} else {
-			return cfgs, txts
-		}
-	}
-
-	if pR.IsType(TkASN) {
-
-		szAsnFirst := strconv.FormatInt(int64(pR.ASN), 10)
-		szAsnLast := ""
-		if pR.ValueInt > 1 {
-			szAsnLast = strconv.FormatInt(
-				int64(pR.ASN)+int64(pR.ValueInt)-1,
-				10,
-			)
-		}
-
-		ccfg, sFields := fnPrependQuery(
-			g_ccfgASN,
-			pR.Registry,
-			pR.Cc,
-			pR.Type,
-			[]byte(szAsnFirst),
-			[]byte(szAsnLast),
-			fmtDate(pR.Date),
-			pR.Status,
-			pR.AsName,
-		)
-
-		return g_colWri.WriteCols(out, wriCfg, ccfg, sFields...)
-	}
-
-	// print row multiple times for each subnet
-	for _, r := range pR.IpRange {
-
-		if !r.IsValid() {
-			continue
-		}
-
-		ccfg, sFields := fnPrependQuery(
-			g_ccfgIP,
-			pR.Registry,
-			pR.Cc,
-			pR.Type,
-			[]byte(r.String()),
-			fmtDate(pR.Date),
-			pR.Status,
-		)
-
-		err := g_colWri.WriteCols(out, wriCfg, ccfg, sFields...)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (m *Modes) printEmailAddr(out io.Writer, em rdap.EntityEmail, cmd string, maxCmdLen int) error {
-
-	var wriCfg ColWriterCfg
-	if m.Pretty {
-		wriCfg = ColWriterCfg{Pad: true, Spacer: []byte(" @@ ")}
-	} else {
-		wriCfg = ColWriterCfg{Pad: false, Spacer: []byte("@@")}
-	}
-
-	fnPrependQuery := func(cfgs []ColCfg, txts ...[]byte) ([]ColCfg, [][]byte) {
-		if m.PrependQuery {
-			return append([]ColCfg{{Wid: maxCmdLen, Rt: false}}, cfgs...),
-				append([][]byte{[]byte(cmd)}, txts...)
-		} else {
-			return cfgs, txts
-		}
-	}
-
-	ccfg, sFields := fnPrependQuery(
-		g_ccfgEmail,
-		[]byte(em.Role),
-		[]byte(em.Handle),
-		[]byte(em.Addr),
+	return iCmd.Exec(
+		CmdExecParams{
+			Modes:     *m,
+			Db:        db,
+			Cmd:       szCmd,
+			MaxCmdLen: maxCmdLen,
+		},
 	)
-
-	return g_colWri.WriteCols(out, wriCfg, ccfg, sFields...)
 }
 
 func rdapByIp(db *bbolt.DB, ip netip.Addr) ([]byte, error) {
@@ -645,10 +336,10 @@ func rdapByIp(db *bbolt.DB, ip netip.Addr) ([]byte, error) {
 	}
 
 	szReg := string(row.Registry)
-	rk := rdap.RegistryNameToKey(szReg)
-	if rk == rdap.RkMAX {
-		return nil, fmt.Errorf("'%s' is not a valid registry name", szReg)
+	rk, err := rdap.RegistryNameToKey(szReg)
+	if err != nil {
+		return nil, err
 	}
 
-	return rdap.QueryRDAPByIP(rk, ip)
+	return rdap.QueryByIP(rk, ip)
 }

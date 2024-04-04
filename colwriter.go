@@ -1,69 +1,47 @@
 package main
 
-import "io"
-
-type ColCfg struct {
-	Wid int
-	Rt  bool
-}
+import (
+	"fmt"
+	"io"
+	"strings"
+)
 
 type ColWriterCfg struct {
-	Spacer []byte
+	Spacer string
 	Pad    bool
 }
 
-type ColWriter struct {
-	buf []byte
+type ColCfg struct {
+	Title string
+	Wid   int
+	Rt    bool
 }
 
-func (cw *ColWriter) WriteCols(
-	out io.Writer,
-	wriCfg ColWriterCfg,
-	colCfg []ColCfg,
-	sTxt ...[]byte,
-) error {
+type ColWriterFunc func(...interface{}) (int, error)
 
-	// reset line buffer
-	if cw.buf == nil {
-		cw.buf = make([]byte, 0, 80)
-	} else {
-		cw.buf = cw.buf[:0]
-	}
+func (wc ColWriterCfg) NewWriterFunc(iWri io.Writer, sCfg []ColCfg) ColWriterFunc {
 
-	nLastCol := len(sTxt) - 1
-
-	for ix, col := range colCfg {
-
-		if ix >= len(sTxt) {
-			break
-		}
-
-		txt := sTxt[ix]
-
-		pad := col.Wid - len(txt)
-
-		if !col.Rt {
-			cw.buf = append(cw.buf, txt...)
-		}
-
-		// padding
-		if wriCfg.Pad {
-			for i := pad; i > 0; i -= 1 {
-				cw.buf = append(cw.buf, ' ')
+	sParts := make([]string, len(sCfg))
+	for i, cfg := range sCfg {
+		if wc.Pad {
+			if cfg.Rt {
+				sParts[i] = fmt.Sprintf("%%%ds", cfg.Wid)
+			} else {
+				sParts[i] = fmt.Sprintf("%%-%ds", cfg.Wid)
 			}
-		}
-
-		if col.Rt {
-			cw.buf = append(cw.buf, txt...)
-		}
-
-		// column separator
-		if (len(wriCfg.Spacer) > 0) && (ix < nLastCol) {
-			cw.buf = append(cw.buf, wriCfg.Spacer...)
+		} else {
+			sParts[i] = "%s"
 		}
 	}
 
-	cw.buf = append(cw.buf, '\n')
-	_, err := out.Write(cw.buf)
-	return err
+	spcr := wc.Spacer
+	if wc.Pad {
+		spcr = " " + wc.Spacer + " "
+	}
+
+	szFmt := strings.Join(sParts, spcr) + "\n"
+
+	return func(sFields ...interface{}) (int, error) {
+		return fmt.Fprintf(iWri, szFmt, sFields...)
+	}
 }

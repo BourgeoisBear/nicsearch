@@ -29,32 +29,43 @@ func GetRDAPUrls() map[RIRKey]string {
 	}
 }
 
-func RegistryNameToKey(regName string) RIRKey {
-
-	switch regName {
-
-	case "LACNIC":
-		return RkLacnic
-	case "ARIN":
-		return RkArin
-	case "APNIC":
-		return RkApnic
-	case "RIPENCC":
-		return RkRipe
-	case "AFRINIC":
-		return RkAfrinic
-	default:
-		return RkMAX
+func (k RIRKey) String() string {
+	switch k {
+	case RkAfrinic:
+		return "AFRINIC"
+	case RkApnic:
+		return "APNIC"
+	case RkArin:
+		return "ARIN"
+	case RkLacnic:
+		return "LACNIC"
+	case RkRipe:
+		return "RIPENCC"
 	}
+	return "UNKNOWN"
 }
 
-func QueryRDAPByIP(key RIRKey, ip netip.Addr) ([]byte, error) {
+func RegistryNameToKey(regName string) (RIRKey, error) {
 
-	mUrl := GetRDAPUrls()
-	szUrl := mUrl[key] + "/ip/" + ip.String()
+	regName = strings.ToUpper(strings.TrimSpace(regName))
+	switch regName {
+	case "AFRINIC":
+		return RkAfrinic, nil
+	case "APNIC":
+		return RkApnic, nil
+	case "ARIN":
+		return RkArin, nil
+	case "LACNIC":
+		return RkLacnic, nil
+	case "RIPENCC":
+		return RkRipe, nil
+	}
+	return RkMAX, fmt.Errorf("'%s' is not a valid registry name.  Valid registry names are: AFRINIC, APNIC, ARIN, LACNIC, and RIPENCC.", regName)
+}
 
-	// request list
-	rsp, err := http.Get(szUrl)
+func getUrl(url string) ([]byte, error) {
+
+	rsp, err := http.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -62,11 +73,24 @@ func QueryRDAPByIP(key RIRKey, ip netip.Addr) ([]byte, error) {
 
 	// error non non-200
 	if rsp.StatusCode != 200 {
-		return nil, fmt.Errorf("%s: %s", rsp.Status, szUrl)
+		return nil, fmt.Errorf("%s: %s", rsp.Status, url)
 	}
 
 	// read response
 	return io.ReadAll(rsp.Body)
+}
+
+func getRIRUrl(key RIRKey, url string) ([]byte, error) {
+	mUrl := GetRDAPUrls()
+	return getUrl(mUrl[key] + url)
+}
+
+func QueryByOrg(key RIRKey, orgId string) ([]byte, error) {
+	return getRIRUrl(key, "/entity/"+orgId)
+}
+
+func QueryByIP(key RIRKey, ip netip.Addr) ([]byte, error) {
+	return getRIRUrl(key, "/ip/"+ip.String())
 }
 
 type EntityEmail struct {
