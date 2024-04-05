@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	cw "github.com/BourgeoisBear/nicsearch/colwriter"
 	"github.com/BourgeoisBear/nicsearch/rdap"
 	"github.com/BourgeoisBear/range2cidr"
 	"go.etcd.io/bbolt"
@@ -22,47 +23,47 @@ type CmdExecParams struct {
 	Modes
 	Db        *bbolt.DB
 	Cmd       string
-	MaxCmdLen int
+	MaxCmdLen uint16
 }
 
 type RowWriters struct {
-	WriteASN ColWriterFunc
-	WriteIP  ColWriterFunc
+	WfASN cw.WriterFuncs
+	WfIP  cw.WriterFuncs
 }
 
 func (cep CmdExecParams) getRowWriters() RowWriters {
 
-	writerCfg := ColWriterCfg{Spacer: "|", Pad: cep.Pretty}
+	writerCfg := cw.Cfg{Spacer: "|", Pad: cep.Pretty}
 
-	ccfgASN := []ColCfg{
-		ColCfg{Wid: 9, Title: "RIR"},
-		ColCfg{Wid: 3, Title: "CC"},
-		ColCfg{Wid: 4, Title: "TYPE"},
-		ColCfg{Wid: 10, Title: "FROM", Rt: true},
-		ColCfg{Wid: 10, Title: "TO", Rt: true},
-		ColCfg{Wid: 10, Title: "DATE"},
-		ColCfg{Wid: 10, Title: "STS"},
-		ColCfg{Title: "NAME"},
+	ccfgASN := []cw.ColCfg{
+		cw.ColCfg{Wid: 9, Title: "RIR"},
+		cw.ColCfg{Wid: 3, Title: "CC"},
+		cw.ColCfg{Wid: 4, Title: "TYPE"},
+		cw.ColCfg{Wid: 10, Title: "FROM", Rt: true},
+		cw.ColCfg{Wid: 10, Title: "TO", Rt: true},
+		cw.ColCfg{Wid: 10, Title: "DATE"},
+		cw.ColCfg{Wid: 10, Title: "STS"},
+		cw.ColCfg{Title: "NAME"},
 	}
 
-	ccfgIP := []ColCfg{
-		ColCfg{Wid: 9, Title: "RIR"},
-		ColCfg{Wid: 3, Title: "CC"},
-		ColCfg{Wid: 4, Title: "TYPE"},
-		ColCfg{Wid: 23, Title: "SUBNET", Rt: true},
-		ColCfg{Wid: 10, Title: "DATE"},
-		ColCfg{Wid: 10, Title: "STS"},
+	ccfgIP := []cw.ColCfg{
+		cw.ColCfg{Wid: 9, Title: "RIR"},
+		cw.ColCfg{Wid: 3, Title: "CC"},
+		cw.ColCfg{Wid: 4, Title: "TYPE"},
+		cw.ColCfg{Wid: 23, Title: "SUBNET", Rt: true},
+		cw.ColCfg{Wid: 10, Title: "DATE"},
+		cw.ColCfg{Wid: 10, Title: "STS"},
 	}
 
 	if cep.PrependQuery {
-		ccQuery := ColCfg{Wid: cep.MaxCmdLen, Title: "QRY"}
-		ccfgASN = append([]ColCfg{ccQuery}, ccfgASN...)
-		ccfgIP = append([]ColCfg{ccQuery}, ccfgIP...)
+		ccQuery := cw.ColCfg{Wid: cep.MaxCmdLen, Title: "QRY"}
+		ccfgASN = append([]cw.ColCfg{ccQuery}, ccfgASN...)
+		ccfgIP = append([]cw.ColCfg{ccQuery}, ccfgIP...)
 	}
 
 	return RowWriters{
-		WriteASN: writerCfg.NewWriterFunc(os.Stdout, ccfgASN),
-		WriteIP:  writerCfg.NewWriterFunc(os.Stdout, ccfgIP),
+		WfASN: writerCfg.NewWriterFuncs(ccfgASN),
+		WfIP:  writerCfg.NewWriterFuncs(ccfgIP),
 	}
 }
 
@@ -106,7 +107,7 @@ func (cep CmdExecParams) printRow(rw RowWriters, pR *Row) error {
 			pR.AsName,
 		)
 
-		_, err := rw.WriteASN(sFields...)
+		_, err := rw.WfASN.Row(os.Stdout, sFields...)
 		return err
 	}
 
@@ -131,7 +132,7 @@ func (cep CmdExecParams) printRow(rw RowWriters, pR *Row) error {
 			pR.Status,
 		)
 
-		_, err := rw.WriteIP(sFields...)
+		_, err := rw.WfIP.Row(os.Stdout, sFields...)
 		if err != nil {
 			return err
 		}
@@ -247,7 +248,6 @@ func (v CmdAsName) Exec(cep CmdExecParams) error {
 /*
 	TODO:
 		- update documentation for commands
-		- headers option
 		- unit tests
 		- embed parse regexs in command type
 */
@@ -279,19 +279,20 @@ func (v CmdRDAP_Org) Exec(cep CmdExecParams) error {
 		return err
 	}
 
-	writerCfg := ColWriterCfg{Spacer: "|", Pad: cep.Pretty}
-	ccfg := []ColCfg{
-		ColCfg{Wid: 9},
-		ColCfg{Wid: 4},
-		ColCfg{Wid: 23, Rt: true},
-		ColCfg{Wid: 10},
-		ColCfg{Wid: 10},
-		ColCfg{Wid: 10},
+	writerCfg := cw.Cfg{Spacer: "|", Pad: cep.Pretty}
+	ccfg := []cw.ColCfg{
+		cw.ColCfg{Wid: 9},
+		cw.ColCfg{Wid: 4},
+		cw.ColCfg{Wid: 23, Rt: true},
+		cw.ColCfg{Wid: 10},
+		cw.ColCfg{Wid: 10},
+		cw.ColCfg{Wid: 10},
 	}
 	if cep.PrependQuery {
-		ccfg = append([]ColCfg{ColCfg{Wid: cep.MaxCmdLen}}, ccfg...)
+		ccfg = append([]cw.ColCfg{cw.ColCfg{Wid: cep.MaxCmdLen}}, ccfg...)
 	}
-	fnWri := writerCfg.NewWriterFunc(os.Stdout, ccfg)
+
+	oWF := writerCfg.NewWriterFuncs(ccfg)
 
 	for _, ipnet := range ent.Networks {
 
@@ -330,7 +331,7 @@ func (v CmdRDAP_Org) Exec(cep CmdExecParams) error {
 					parts[4], _, _ = strings.Cut(evt.Date, "T")
 				}
 			}
-			_, err := fnWri(parts...)
+			_, err := oWF.Row(os.Stdout, parts...)
 			if err != nil {
 				return err
 			}
@@ -379,23 +380,23 @@ func (v CmdEmail) Exec(cep CmdExecParams) error {
 		return err
 	}
 
-	writerCfg := ColWriterCfg{Spacer: "@@", Pad: cep.Pretty}
-	ccfg := []ColCfg{
-		ColCfg{Wid: 16},
-		ColCfg{Wid: 16},
-		ColCfg{},
+	writerCfg := cw.Cfg{Spacer: "@@", Pad: cep.Pretty}
+	ccfg := []cw.ColCfg{
+		cw.ColCfg{Wid: 16},
+		cw.ColCfg{Wid: 16},
+		cw.ColCfg{},
 	}
 	if cep.PrependQuery {
-		ccfg = append([]ColCfg{ColCfg{Wid: cep.MaxCmdLen}}, ccfg...)
+		ccfg = append([]cw.ColCfg{cw.ColCfg{Wid: cep.MaxCmdLen}}, ccfg...)
 	}
-	fnW := writerCfg.NewWriterFunc(os.Stdout, ccfg)
+	oWF := writerCfg.NewWriterFuncs(ccfg)
 
 	for _, em := range ent.GetEmailAddrs() {
 		var err error
 		if cep.PrependQuery {
-			_, err = fnW(cep.Cmd, em.Role, em.Handle, em.Addr)
+			_, err = oWF.Row(os.Stdout, cep.Cmd, em.Role, em.Handle, em.Addr)
 		} else {
-			_, err = fnW(em.Role, em.Handle, em.Addr)
+			_, err = oWF.Row(os.Stdout, em.Role, em.Handle, em.Addr)
 		}
 		if err != nil {
 			return err

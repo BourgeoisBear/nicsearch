@@ -48,23 +48,6 @@ type CmdRDAP_Org struct {
 
 type CmdAll struct{}
 
-/*
-type CmdIx int
-
-const (
-	CmdIxASN CmdIx = iota
-	CmdIxIP
-	CmdIxNAME
-	CmdIxCC
-	CmdIxALL
-	CmdIxEMAIL
-	CmdIxRDAP_IP
-	CmdIxRDAP_ORG
-	CmdIxRDAP_ORG_NETS
-	CmdIxMAX
-)
-*/
-
 var g_cmdRegex []*regexp.Regexp
 
 func init() {

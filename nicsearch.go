@@ -323,7 +323,7 @@ func (m *Modes) doREPL(db *bbolt.DB, szCmd string, maxCmdLen int) error {
 			Modes:     *m,
 			Db:        db,
 			Cmd:       szCmd,
-			MaxCmdLen: maxCmdLen,
+			MaxCmdLen: uint16(maxCmdLen),
 		},
 	)
 }
