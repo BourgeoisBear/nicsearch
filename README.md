@@ -111,10 +111,8 @@ QUERY
 
 https://www.apnic.net/about-apnic/corporate-documents/documents/resource-guidelines/rir-statistics-exchange-format/
 
-### Fields
-
 ```
-    registry|cc|type|start|value|date|status[|extensions...]
+registry|cc|type|start|value|date|status[|extensions...]
 
 registry
     One value from the set of defined strings: {afrinic,apnic,arin,iana,lacnic,ripencc};
