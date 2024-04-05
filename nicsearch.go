@@ -194,17 +194,25 @@ QUERY
 		return
 	}
 
-	// TODO: add https://ftp.arin.net/info/asn.txt
 	// build file list
-	asnFile := DownloadItem{
-		Host:    "ftp.ripe.net",
-		SrcPath: "ripe/asnames/asn.txt",
-		DstPath: filepath.Join(dbPath, "asn.txt.gz"),
-	}
 	mDlItems := GetRIRDownloadItems(dbPath)
 	sFiles := make([]DownloadItem, 0, len(mDlItems)+1)
 	for _, di := range mDlItems {
 		sFiles = append(sFiles, di)
+	}
+
+	/*
+		TODO:
+			- RIPE's list seems complete, but may want to merge
+			  https://ftp.arin.net/info/asn.txt results, just in case.
+					\d+\s+{RIR}-ASNBLOCK-\d+
+
+			- find ASN name lists for other registries
+	*/
+	asnFile := DownloadItem{
+		Host:    "ftp.ripe.net",
+		SrcPath: "ripe/asnames/asn.txt",
+		DstPath: filepath.Join(dbPath, "asn.txt.gz"),
 	}
 	sFiles = append(sFiles, asnFile)
 
