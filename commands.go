@@ -52,7 +52,7 @@ func (cep CmdExecParams) getRowWriters() RowWriters {
 		cw.ColCfg{Wid: 4, Title: "TYPE"},
 		cw.ColCfg{Wid: 23, Title: "SUBNET", Rt: true},
 		cw.ColCfg{Wid: 10, Title: "DATE"},
-		cw.ColCfg{Wid: 10, Title: "STS"},
+		cw.ColCfg{Title: "STS"},
 	}
 
 	if cep.PrependQuery {
@@ -274,13 +274,14 @@ func (v CmdRDAP_Org) Exec(cep CmdExecParams) error {
 
 	writerCfg := cw.Cfg{Spacer: "|", Pad: cep.Pretty}
 	ccfg := []cw.ColCfg{
-		cw.ColCfg{Wid: 9},
-		cw.ColCfg{Wid: 4},
-		cw.ColCfg{Wid: 23, Rt: true},
-		cw.ColCfg{Wid: 10},
-		cw.ColCfg{Wid: 10},
-		cw.ColCfg{Wid: 10},
+		cw.ColCfg{Wid: 9, Title: "RIR"},
+		cw.ColCfg{Wid: 3, Title: "CC"},
+		cw.ColCfg{Wid: 4, Title: "TYPE"},
+		cw.ColCfg{Wid: 23, Title: "SUBNET", Rt: true},
+		cw.ColCfg{Wid: 10, Title: "DATE"},
+		cw.ColCfg{Title: "STS"},
 	}
+
 	if cep.PrependQuery {
 		ccfg = append([]cw.ColCfg{cw.ColCfg{Wid: cep.MaxCmdLen}}, ccfg...)
 	}
@@ -309,20 +310,21 @@ func (v CmdRDAP_Org) Exec(cep CmdExecParams) error {
 			}
 			parts := []interface{}{
 				v.RIR.String(),
+				"",
 				addrVer,
 				pfx.String(),
 				"-",
-				"-",
 				strings.ToUpper(strings.Join(ipnet.Status, ":")),
 			}
-
 			for _, evt := range ipnet.Events {
-				switch evt.Action {
-				case "registration":
-					parts[3], _, _ = strings.Cut(evt.Date, "T")
-				case "last changed":
+				switch strings.ToUpper(strings.TrimSpace(evt.Action)) {
+				case "LAST CHANGED":
 					parts[4], _, _ = strings.Cut(evt.Date, "T")
 				}
+			}
+
+			if cep.PrependQuery {
+				parts = append([]interface{}{cep.Cmd}, parts...)
 			}
 			_, err := oWF.Row(os.Stdout, parts...)
 			if err != nil {
