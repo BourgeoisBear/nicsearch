@@ -1,5 +1,12 @@
 package main
 
+/*
+	TODO:
+		- unit tests
+		- embed parse regexs in command type
+		- stress test regexes
+*/
+
 import (
 	"flag"
 	"fmt"
@@ -93,7 +100,7 @@ func main() {
 	flag.BoolVar(&bDownload, "download", false, "force download of RIR databases")
 	flag.BoolVar(&mode.Color, "color", bIsTty, "force color output on/off")
 	flag.BoolVar(&mode.Pretty, "pretty", bIsTty, "force pretty print on/off")
-	flag.BoolVar(&mode.PrependQuery, "prependQuery", false, "prepend query to corresponding result row")
+	flag.BoolVar(&mode.PrependQuery, "prependQuery", false, "prepend query to corresponding result row in tabular outputs")
 	flag.StringVar(&dbPath, "dbpath", dbPath, "override path to RIR data and index")
 
 	var iWri io.Writer = os.Stdout
@@ -103,10 +110,10 @@ func main() {
 		fmt.Fprint(iWri, `USAGE
   nicsearch [OPTION]... [QUERY]...
 
-Offline lookup by IP/ASN of other IPs/ASNs owned by the same organization.
-This tool can also dump IPs/ASNs by country code, as well as map most ASNs to
-their names.  Uses locally cached data, downloaded from all regional internet
-registries (RIRs) to prevent throttlings and timeouts on high-volume lookups.
+    Offline lookup by IP/ASN of other IPs/ASNs owned by the same organization.
+    This tool can also dump IPs/ASNs by country code, as well as map most ASNs to
+    their names.  Uses locally cached data, downloaded from all regional internet
+    registries (RIRs) to prevent throttlings and timeouts on high-volume lookups.
 
 OPTION
 `)
@@ -116,49 +123,60 @@ OPTION
 QUERY
   as ASN [+]
     query by autonomous system number (ASN).
-    example: 'as 14061'
+      ex: 'as 14061'
 
     add the suffix '+' to return all IPs and ASNs associated
     by 'reg-id' with the same organization.
-    example: 'as 14061 +'
+      ex: 'as 14061 +'
 
   ip IPADDR [+]
     query by IP (v4 or v6) address.
-    example: 'ip 172.104.6.84'
+      ex: 'ip 172.104.6.84'
 
     add the suffix '+' to return all IPs and ASNs associated
     by 'reg-id' with the same organization.
-    example: 'ip 172.104.6.84 +'
+      ex: 'ip 172.104.6.84 +'
 
   cc COUNTRY_CODE
-    query by country code.  returns all IPs & ASNs for the given country.
-    example: 'cc US'
+    query by country code.
+    returns all IPs & ASNs for the given country.
+      ex: 'cc US'
 
   na REGEX [+]
-    query by ASN name.  returns all ASNs with names matching the given REGEX.
+    query by ASN name.
+    returns all ASNs with names matching the given REGEX.
     see https://pkg.go.dev/regexp/syntax for syntax rules.
-    example: 'na microsoft'
+      ex: 'na microsoft'
 
     add the suffix '+' to return all IPs and ASNs associated
     by 'reg-id' with the same organization(s) of all matching ASNs.
-    example: 'na microsoft +'
+      ex: 'na microsoft +'
 
-  email IPADDR
-    get email contacts for IPADDR
-    example: 'email 8.8.8.8'
+  rdap.email IPADDR
+    get email contacts for IPADDR.
+      ex: 'rdap.email 8.8.8.8'
 
-    NOTE: this is an on-line query against the RIR's RDAP service.
-          columns are separated by '@@' instead of '|' since
-          pipe can appear inside the unquoted local-part of an email address.
+    NOTE: columns are separated by '@@' instead of '|' since pipe can
+          appear inside the unquoted local-part of an email address.
 
-  rdap IPADDR
-    get full RDAP reply for IPADDR
-    example: 'rdap 8.8.8.8'
+  rdap.ip RIR IPADDR
+    get full RDAP reply (in JSON) from RIR for IP address.
+      ex: 'rdap.ip arin 8.8.8.8'
 
-    NOTE: this is an on-line query against the RIR's RDAP service.
+  rdap.org RIR ORGID
+    get full RDAP reply (in JSON) from RIR for ORGID.
+      ex: 'rdap.org arin DO-13'
+
+  rdap.orgnets RIR ORGID
+    an 'rdap.org' query, returning only the associated IP networks
+    section in table format.
+      ex: 'rdap.orgnets arin DO-13'
 
   all
-    dump all records`)
+    dump all local records
+
+  NOTE: all 'rdap.' queries require an internet connection to the
+        RIR's RDAP service.`)
 
 		fmt.Fprint(iWri, "\n")
 	}

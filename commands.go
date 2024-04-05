@@ -245,13 +245,6 @@ func (v CmdAsName) Exec(cep CmdExecParams) error {
 	return cep.printRowsSorted(cep.getRowWriters(), sRows)
 }
 
-/*
-	TODO:
-		- update documentation for commands
-		- unit tests
-		- embed parse regexs in command type
-*/
-
 func (v CmdRDAP_IP) Exec(cep CmdExecParams) error {
 
 	bsJSON, err := rdap.QueryByIP(v.RIR, v.IP)

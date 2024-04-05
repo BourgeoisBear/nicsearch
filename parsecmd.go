@@ -58,7 +58,7 @@ func init() {
 		`(NA)(?:ME)?\s+(.*?)\s*(\s\+)?`,
 		`(CC)\s+([A-Z]{2})\s*`,
 		`(ALL)\s*`,
-		`(EMAIL)\s+(.*?)\s*`,
+		`(RDAP\.EMAIL)\s+(.*?)\s*`,
 		`(RDAP\.IP)\s+(.*?)\s+(.*?)\s*`,
 		`(RDAP\.ORG)\s+(.*?)\s+(.*?)\s*`,
 		`(RDAP\.ORGNETS)\s+(.*?)\s+(.*?)\s*`,
@@ -89,7 +89,7 @@ func (m *Modes) PrintJSON(iWri io.Writer, bsJSON []byte) error {
 			return err
 		}
 
-		bsJSON, err = json.MarshalIndent(mTmp, "", "\t")
+		bsJSON, err = json.MarshalIndent(mTmp, "", "  ")
 		if err != nil {
 			return err
 		}
@@ -113,7 +113,6 @@ func (m *Modes) ParseCmd(cmd string) (CmdExec, error) {
 		sArg = sArg[1:]
 
 		// TODO: validate commands
-		// TODO: stress test regexes
 		bGetAssociated := strings.HasSuffix(cmd, "+")
 
 		switch sArg[0] {
@@ -150,7 +149,7 @@ func (m *Modes) ParseCmd(cmd string) (CmdExec, error) {
 			return CmdAll{}, nil
 
 		// EMAIL
-		case "EMAIL":
+		case "RDAP.EMAIL":
 			ip, e2 := netip.ParseAddr(sArg[1])
 			if e2 != nil {
 				return nil, errors.WithMessage(e2, "invalid IP")
