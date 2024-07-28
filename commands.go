@@ -27,8 +27,8 @@ type CmdExecParams struct {
 }
 
 type RowWriters struct {
-	WfASN cw.WriterFuncs
-	WfIP  cw.WriterFuncs
+	WfASN cw.RowWriter
+	WfIP  cw.RowWriter
 }
 
 func (cep CmdExecParams) getRowWriters() RowWriters {
@@ -107,7 +107,7 @@ func (cep CmdExecParams) printRow(rw RowWriters, pR *Row) error {
 			pR.AsName,
 		)
 
-		_, err := rw.WfASN.Row(os.Stdout, sFields...)
+		_, err := rw.WfASN(os.Stdout, sFields...)
 		return err
 	}
 
@@ -132,7 +132,7 @@ func (cep CmdExecParams) printRow(rw RowWriters, pR *Row) error {
 			pR.Status,
 		)
 
-		_, err := rw.WfIP.Row(os.Stdout, sFields...)
+		_, err := rw.WfIP(os.Stdout, sFields...)
 		if err != nil {
 			return err
 		}
@@ -326,7 +326,7 @@ func (v CmdRDAP_Org) Exec(cep CmdExecParams) error {
 			if cep.PrependQuery {
 				parts = append([]interface{}{cep.Cmd}, parts...)
 			}
-			_, err := oWF.Row(os.Stdout, parts...)
+			_, err := oWF(os.Stdout, parts...)
 			if err != nil {
 				return err
 			}
@@ -389,9 +389,9 @@ func (v CmdEmail) Exec(cep CmdExecParams) error {
 	for _, em := range rdap.GetEmailAddrs(oNet.Entities) {
 		var err error
 		if cep.PrependQuery {
-			_, err = oWF.Row(os.Stdout, cep.Cmd, em.Role, em.Handle, em.Addr)
+			_, err = oWF(os.Stdout, cep.Cmd, em.Role, em.Handle, em.Addr)
 		} else {
-			_, err = oWF.Row(os.Stdout, em.Role, em.Handle, em.Addr)
+			_, err = oWF(os.Stdout, em.Role, em.Handle, em.Addr)
 		}
 		if err != nil {
 			return err
