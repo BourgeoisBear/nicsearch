@@ -302,8 +302,12 @@ QUERY
 			}
 
 			runeLen := utf8.RuneCountInString(line)
-			if e2 := mode.doREPL(db, line, runeLen); e2 != nil {
+			bContinue, e2 := mode.doREPL(db, line, runeLen)
+			if e2 != nil {
 				mode.printErr(e2, line)
+			}
+			if !bContinue {
+				break
 			}
 		}
 
@@ -320,8 +324,12 @@ QUERY
 
 		// args command mode
 		for ix := range sCmds {
-			if err := mode.doREPL(db, sCmds[ix], runeLen); err != nil {
-				mode.printErr(err, sCmds[ix])
+			bContinue, e2 := mode.doREPL(db, sCmds[ix], runeLen)
+			if e2 != nil {
+				mode.printErr(e2, sCmds[ix])
+			}
+			if !bContinue {
+				break
 			}
 		}
 	}
@@ -336,15 +344,20 @@ func (m *Modes) printErr(err error, query string) (int, error) {
 	return m.AnsiMsgEx(os.Stderr, "error", err.Error(), query, []uint8{1, 91})
 }
 
-func (m *Modes) doREPL(db *bbolt.DB, szCmd string, maxCmdLen int) error {
+func (m *Modes) doREPL(db *bbolt.DB, szCmd string, maxCmdLen int) (bool, error) {
 
 	szCmd = strings.ToUpper(strings.TrimSpace(szCmd))
-	iCmd, err := m.ParseCmd(szCmd)
-	if err != nil {
-		return err
+
+	if (szCmd == "EXIT") || (szCmd == "QUIT") {
+		return false, nil
 	}
 
-	return iCmd.Exec(
+	iCmd, err := m.ParseCmd(szCmd)
+	if err != nil {
+		return true, err
+	}
+
+	return true, iCmd.Exec(
 		CmdExecParams{
 			Modes:     *m,
 			Db:        db,

@@ -97,11 +97,11 @@ type EntityEmail struct {
 	Role, Handle, Addr string
 }
 
-func (e Entity) GetEmailAddrs() []EntityEmail {
+func GetEmailAddrs(sRoot []Entity) []EntityEmail {
 
 	var sEml []EntityEmail
 
-	processEntities(e.Entities, func(ix int, ent Entity) bool {
+	processEntities(sRoot, func(ix int, ent Entity) bool {
 
 		// TODO: ISP name, address, telephone might be nice
 		for _, vc := range ent.VCard {

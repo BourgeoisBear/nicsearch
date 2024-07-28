@@ -368,8 +368,8 @@ func (v CmdEmail) Exec(cep CmdExecParams) error {
 		return err
 	}
 
-	var ent rdap.Entity
-	err = json.Unmarshal(bsJSON, &ent)
+	var oNet rdap.IPNetwork
+	err = json.Unmarshal(bsJSON, &oNet)
 	if err != nil {
 		os.Stderr.Write(bsJSON)
 		return err
@@ -386,7 +386,7 @@ func (v CmdEmail) Exec(cep CmdExecParams) error {
 	}
 	oWF := writerCfg.NewWriterFuncs(ccfg)
 
-	for _, em := range ent.GetEmailAddrs() {
+	for _, em := range rdap.GetEmailAddrs(oNet.Entities) {
 		var err error
 		if cep.PrependQuery {
 			_, err = oWF.Row(os.Stdout, cep.Cmd, em.Role, em.Handle, em.Addr)
